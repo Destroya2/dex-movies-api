@@ -39,6 +39,9 @@ export interface DetailResult {
   dubs: { subjectId: string; language: string }[];
   seasons?: any[];
   freeEpisodes: number;
+  language?: string;
+  isFrench?: boolean;
+  subtitleLangs?: string;
 }
 
 export interface StreamResult {

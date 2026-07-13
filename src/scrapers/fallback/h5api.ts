@@ -2,23 +2,13 @@ import { request } from '../../utils/http';
 import { API_H5_URL, ENDPOINTS } from '../../config/constants';
 import { Scraper, ScraperConfig, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult } from '../base';
 
-const H5_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
-  'Referer': 'https://moviebox.ph/',
-  'Origin': 'https://moviebox.ph',
-  'X-Client-Info': '{"timezone":"Asia/Dhaka"}',
-  'X-Request-Lang': 'en',
-  'Accept': 'application/json',
-  'Content-Type': 'application/json',
-  'sec-ch-ua': '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
-  'sec-ch-ua-mobile': '?0',
-  'sec-ch-ua-platform': '"Windows"',
-};
-
-// IP d'une région autorisée (Nigeria). Le CDN player (netfilm.world) géo-bloque
-// les IP datacenter (ex: Vercel US) via X-Forwarded-For et répond
-// "403 invalid region" — ce spoof rétablit l'accès aux flux depuis n'importe où.
-const ALLOWED_REGION_IP = process.env.SPOOF_IP || '41.58.0.1';
+// MovieBox sert un catalogue DIFFÉRENT selon la région de l'IP appelante :
+// une IP US (Vercel) reçoit le catalogue anglophone (0 VF, sous-titres gérés
+// autrement), une IP d'Afrique de l'Ouest francophone reçoit le catalogue VF
+// (~190 titres "En français"). On présente donc une IP du Burkina Faso sur TOUS
+// les appels (contenu + lecteur + sous-titres) pour obtenir le flux francophone
+// et débloquer le CDN player. Surchargeable via SPOOF_IP.
+const ALLOWED_REGION_IP = process.env.SPOOF_IP || '196.28.244.1';
 
 const GEO_SPOOF_HEADERS = {
   'X-Forwarded-For': ALLOWED_REGION_IP,
@@ -26,13 +16,27 @@ const GEO_SPOOF_HEADERS = {
   'X-Real-IP': ALLOWED_REGION_IP,
 };
 
+const H5_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+  'Referer': 'https://moviebox.ph/',
+  'Origin': 'https://moviebox.ph',
+  'X-Client-Info': '{"timezone":"Africa/Ouagadougou"}',
+  'X-Request-Lang': 'fr',
+  'Accept': 'application/json',
+  'Content-Type': 'application/json',
+  'sec-ch-ua': '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
+  'sec-ch-ua-mobile': '?0',
+  'sec-ch-ua-platform': '"Windows"',
+  ...GEO_SPOOF_HEADERS,
+};
+
 const PLAYER_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
   'Accept': 'application/json',
-  'Accept-Language': 'en-US,en;q=0.9',
+  'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
   'Cache-Control': 'no-cache',
   'Pragma': 'no-cache',
-  'X-Client-Info': '{"timezone":"Asia/Dhaka"}',
+  'X-Client-Info': '{"timezone":"Africa/Ouagadougou"}',
   'X-Source': '',
   'sec-ch-ua': '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
   'sec-ch-ua-mobile': '?0',
@@ -82,10 +86,18 @@ export function prioritizeFrench<T extends Record<string, any>>(items: T[]): T[]
     .map((x) => x.item);
 }
 
+// "En français" / "VF" → "VF" ; "VOSTFR" → "VOSTFR" ; sinon null.
+function languageLabel(corner: string, isFrench: boolean): string | undefined {
+  if (/vostfr/i.test(corner)) return 'VOSTFR';
+  if (isFrench || /fran[cç]ais/i.test(corner)) return 'VF';
+  return undefined;
+}
+
 function mapSubject(sub: any, fallbackDetailPath?: string): any | null {
   if (!sub) return null;
   const subjectId = sub.subjectId;
   if (!subjectId) return null;
+  const corner = sub.corner ? String(sub.corner) : '';
   const item: any = {
     subjectId: String(subjectId),
     detailPath: sub.detailPath || fallbackDetailPath || '',
@@ -94,10 +106,14 @@ function mapSubject(sub: any, fallbackDetailPath?: string): any | null {
     type: sub.subjectType === 2 ? 'series' : 'movie',
     year: sub.releaseDate?.substring(0, 4),
     rating: sub.imdbRatingValue || undefined,
-    badge: sub.corner || undefined,
     genres: sub.genre ? String(sub.genre).split(',').map((g: string) => g.trim()) : undefined,
+    // Langues de sous-titres disponibles (chaîne CSV côté upstream)
+    subtitleLangs: sub.subtitles ? String(sub.subtitles) : undefined,
   };
-  item.isFrench = isFrenchContent(item);
+  item.isFrench = isFrenchContent({ ...item, badge: corner });
+  item.language = languageLabel(corner, item.isFrench);
+  // On garde le "corner" comme badge seulement s'il ne sert pas à indiquer la langue
+  item.badge = corner && !/fran[cç]ais|vostfr/i.test(corner) ? corner : undefined;
   return item;
 }
 
@@ -303,6 +319,9 @@ export class MovieBoxH5Scraper implements Scraper {
       .map((c: any) => c.name || c.staffName || (typeof c === 'string' ? c : ''))
       .filter(Boolean);
 
+    const corner = sub.corner ? String(sub.corner) : '';
+    const isFrench = isFrenchContent({ title: sub.title, detailPath, badge: corner });
+
     return {
       subjectId: String(sub.subjectId || subjectId),
       detailPath,
@@ -320,6 +339,9 @@ export class MovieBoxH5Scraper implements Scraper {
       dubs,
       seasons: seasons.length > 0 ? seasons : undefined,
       freeEpisodes: sub.freeNum || data.watchTimeLimit?.freeNum || 0,
+      language: languageLabel(corner, isFrench),
+      isFrench,
+      subtitleLangs: sub.subtitles ? String(sub.subtitles) : undefined,
     };
   }
 
