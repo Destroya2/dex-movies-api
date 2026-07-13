@@ -9,6 +9,7 @@
     "start": "node dist/index.js",
     "vercel-build": "tsc && cp -r dist/api dist/vercel 2>/dev/null; true",
     "test": "cross-env TEST_MODE=true jest",
+    "smoke": "tsx tests/smoke.ts",
     "test:watch": "jest --watch"
   },
   "dependencies": {

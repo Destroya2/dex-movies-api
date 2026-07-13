@@ -10,7 +10,8 @@ export class MovieBoxMobileScraper implements Scraper {
     name: 'moviebox-hmac',
     version: '1.0.0',
     baseUrl: API_BASE_URL,
-    priority: 0,
+    // Secondaire : api3.aoneroom.com bloque les IP datacenter (Vercel)
+    priority: 1,
   };
 
   async isAvailable(): Promise<boolean> {
@@ -56,7 +57,7 @@ export class MovieBoxMobileScraper implements Scraper {
     };
   }
 
-  async stream(subjectId: string, season?: number, episode?: number): Promise<StreamResult> {
+  async stream(subjectId: string, season?: number, episode?: number, _detailPath?: string): Promise<StreamResult> {
     return fetchStream(subjectId, season, episode);
   }
 

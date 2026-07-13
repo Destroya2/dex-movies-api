@@ -16,6 +16,9 @@ export const ENDPOINTS = {
   h5Detail: '/wefeed-h5api-bff/detail',
   h5PlayDomain: '/wefeed-h5api-bff/media-player/get-domain',
   h5Play: '/wefeed-h5api-bff/subject/play',
+  h5Trending: '/wefeed-h5api-bff/subject/trending',
+  h5Filter: '/wefeed-h5api-bff/subject/filter',
+  h5Caption: '/wefeed-h5api-bff/subject/caption',
 };
 
 export const CDN_DOMAINS = [

@@ -175,8 +175,7 @@ router.get('/detail/:subjectId', cacheMiddleware('detail'), wrapAsync(async (req
  */
 router.get('/trending', cacheMiddleware('home'), wrapAsync(async (req, res) => {
   const page = parseInt(req.query.page as string) || 1;
-  const firstTab = '4516404531735022304';
-  const { data, source } = await scraper.category(firstTab, page);
+  const { data, source } = await scraper.category('trending', page);
   res.json({
     success: true,
     data: { items: data.items, page, hasMore: data.hasMore },
@@ -206,16 +205,23 @@ router.get('/trending', cacheMiddleware('home'), wrapAsync(async (req, res) => {
  *         schema:
  *           type: integer
  *           default: 1
+ *       - in: query
+ *         name: detailPath
+ *         description: Slug du contenu (recommandé, évite un aller-retour detail)
+ *         schema:
+ *           type: string
  *     responses:
  *       200:
  *         description: Stream sources
  */
 router.get('/stream/:subjectId', cacheMiddleware('stream'), wrapAsync(async (req, res) => {
   const subjectId = req.params.subjectId as string;
-  const season = parseInt(req.query.season as string) || 1;
-  const episode = parseInt(req.query.episode as string) || 1;
+  // Alias se/ep acceptés pour compatibilité avec les anciens clients
+  const season = parseInt((req.query.season ?? req.query.se) as string) || 1;
+  const episode = parseInt((req.query.episode ?? req.query.ep) as string) || 1;
+  const detailPath = (req.query.detailPath as string) || undefined;
   if (!subjectId) throw new AppError(400, 'MISSING_ID', 'subjectId is required');
-  const { data, source } = await scraper.stream(subjectId, season, episode);
+  const { data, source } = await scraper.stream(subjectId, season, episode, detailPath);
   res.json({
     success: true,
     data,

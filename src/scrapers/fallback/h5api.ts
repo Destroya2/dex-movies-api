@@ -28,20 +28,61 @@ const PLAYER_HEADERS = {
   'sec-ch-ua-platform': '"Windows"',
 };
 
+// Onglets exposés par notre API. Les IDs sont stables et résolus dans category().
+const CATEGORY_TABS: { id: string; title: string }[] = [
+  { id: 'trending', title: 'Trending' },
+  { id: 'movies', title: 'Movies' },
+  { id: 'series', title: 'TV Series' },
+];
+
+// tabIds upstream de /subject/trending (validés en live) :
+// 2 = films (subjectType 1), 5 = séries/anime (subjectType 2), absent = mixte
+const TRENDING_TAB_MAP: Record<string, string | null> = {
+  trending: null,
+  movies: '2',
+  series: '5',
+};
+
+function mapSubject(sub: any, fallbackDetailPath?: string): any | null {
+  if (!sub) return null;
+  const subjectId = sub.subjectId;
+  if (!subjectId) return null;
+  return {
+    subjectId: String(subjectId),
+    detailPath: sub.detailPath || fallbackDetailPath || '',
+    title: sub.title || 'Unknown',
+    posterUrl: sub.cover?.url || sub.poster?.url || '',
+    type: sub.subjectType === 2 ? 'series' : 'movie',
+    year: sub.releaseDate?.substring(0, 4),
+    rating: sub.imdbRatingValue || undefined,
+    badge: sub.corner || undefined,
+    genres: sub.genre ? String(sub.genre).split(',').map((g: string) => g.trim()) : undefined,
+  };
+}
+
 export class MovieBoxH5Scraper implements Scraper {
   config: ScraperConfig = {
     name: 'moviebox-h5api',
-    version: '1.0.0',
+    version: '2.0.0',
     baseUrl: API_H5_URL,
-    priority: 1,
+    priority: 0,
   };
 
   private bearerToken: string | null = null;
   private lastTokenFetch = 0;
   private readonly TOKEN_TTL = 25 * 60 * 1000;
+  // Cache subjectId -> detailPath pour résoudre le slug des streams
+  private slugCache = new Map<string, string>();
 
-  private async acquireBearerToken(): Promise<string> {
-    if (this.bearerToken && Date.now() - this.lastTokenFetch < this.TOKEN_TTL) {
+  private rememberSlug(subjectId: string, detailPath?: string): void {
+    if (subjectId && detailPath) {
+      if (this.slugCache.size > 500) this.slugCache.clear();
+      this.slugCache.set(subjectId, detailPath);
+    }
+  }
+
+  private async acquireBearerToken(force: boolean = false): Promise<string> {
+    if (!force && this.bearerToken && Date.now() - this.lastTokenFetch < this.TOKEN_TTL) {
       return this.bearerToken;
     }
 
@@ -75,7 +116,7 @@ export class MovieBoxH5Scraper implements Scraper {
     return { ...H5_HEADERS, 'Authorization': `Bearer ${token}` };
   }
 
-  private async updateTokenFromResponse(headers: Record<string, string>): Promise<void> {
+  private updateTokenFromResponse(headers: Record<string, string>): void {
     const xUser = headers['x-user'];
     if (xUser) {
       try {
@@ -88,6 +129,25 @@ export class MovieBoxH5Scraper implements Scraper {
     }
   }
 
+  // GET/POST authentifié avec un retry sur 401/403 (token invité expiré)
+  private async authedRequest(url: string, opts: { method?: string; body?: string } = {}): Promise<any> {
+    let headers = await this.authHeaders();
+    let response = await request(url, { ...opts, headers });
+
+    if (response.status === 401 || response.status === 403) {
+      await this.acquireBearerToken(true);
+      headers = await this.authHeaders();
+      response = await request(url, { ...opts, headers });
+    }
+
+    if (response.status !== 200) {
+      throw new Error(`H5 request failed (${response.status}): ${url}`);
+    }
+
+    this.updateTokenFromResponse(response.headers);
+    return response.json();
+  }
+
   async isAvailable(): Promise<boolean> {
     try {
       await this.acquireBearerToken();
@@ -98,18 +158,9 @@ export class MovieBoxH5Scraper implements Scraper {
   }
 
   async home(): Promise<HomeResult> {
-    const headers = await this.authHeaders();
-    const response = await request(`${API_H5_URL}${ENDPOINTS.h5Home}?host=moviebox.ph`, { headers });
-
-    if (response.status !== 200) {
-      throw new Error(`H5 home failed: ${response.status}`);
-    }
-
-    await this.updateTokenFromResponse(response.headers);
-    const json = await response.json();
+    const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Home}?host=moviebox.ph`);
     const operatingList = json?.data?.operatingList || [];
 
-    const tabs: { id: string; title: string }[] = [];
     const sections: any[] = [];
 
     for (const op of operatingList) {
@@ -118,58 +169,44 @@ export class MovieBoxH5Scraper implements Scraper {
 
       if (opType === 'BANNER') {
         const items = (op.banner?.items || [])
-          .filter((item: any) => item.title && !item.title.includes('Communities'))
-          .map((item: any) => ({
-            subjectId: String(item.subject?.subjectId || ''),
-            title: item.title || item.subject?.title || '',
-            posterUrl: item.image?.url || item.subject?.cover?.url || '',
-            type: item.subject?.subjectType === 2 ? 'series' : 'movie',
-            rating: item.subject?.imdbRatingValue || undefined,
-            badge: item.subject?.corner || undefined,
-          }));
-        sections.push({ id: 'banner', title: 'Featured', type: 'banner', items });
+          .map((item: any) => {
+            const mapped = mapSubject(item.subject, item.detailPath);
+            if (!mapped) return null;
+            // L'image du banner est en paysage, prioritaire sur le poster
+            if (item.image?.url) mapped.coverUrl = item.image.url;
+            if (item.title) mapped.title = item.title;
+            return mapped;
+          })
+          .filter(Boolean);
+        if (items.length > 0) {
+          sections.push({ id: 'banner', title: 'Featured', type: 'banner', items });
+        }
       } else if (['SUBJECTS_MOVIE', 'SUBJECTS_TV', 'SUBJECTS_ANIMATION'].includes(opType)) {
-        const items = (op.subjects || []).map((sub: any) => ({
-          subjectId: String(sub.subjectId || ''),
-          title: sub.title || '',
-          posterUrl: sub.cover?.url || '',
-          type: sub.subjectType === 2 ? 'series' : 'movie',
-          rating: sub.imdbRatingValue || undefined,
-          year: sub.releaseDate?.substring(0, 4),
-          badge: sub.corner || undefined,
-        }));
-        sections.push({ id: opType, title, type: 'row', items });
+        const items = (op.subjects || []).map((sub: any) => mapSubject(sub)).filter(Boolean);
+        if (items.length > 0) {
+          sections.push({ id: op.opId || opType, title, type: 'row', items });
+        }
       }
     }
 
-    return { sections, tabs };
+    for (const section of sections) {
+      for (const item of section.items) this.rememberSlug(item.subjectId, item.detailPath);
+    }
+
+    return { sections, tabs: CATEGORY_TABS };
   }
 
   async search(query: string, page: number = 1): Promise<SearchResult> {
-    const headers = await this.authHeaders();
     const body = JSON.stringify({ keyword: query, page, perPage: 20 });
-    const response = await request(`${API_H5_URL}${ENDPOINTS.h5Search}`, { method: 'POST', headers, body });
-
-    if (response.status !== 200) {
-      throw new Error(`H5 search failed: ${response.status}`);
-    }
-
-    await this.updateTokenFromResponse(response.headers);
-    const json = await response.json();
+    const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Search}`, { method: 'POST', body });
     const inner = json?.data || {};
     const raw = inner.items || inner.list || [];
 
-    const items = raw.map((item: any) => {
-      const sub = item.subject || item;
-      return {
-        subjectId: String(sub.subjectId || ''),
-        title: sub.title || 'Unknown',
-        posterUrl: sub.cover?.url || '',
-        type: sub.subjectType === 2 ? 'series' : 'movie',
-        year: sub.releaseDate?.substring(0, 4),
-        rating: sub.imdbRatingValue || undefined,
-      };
-    }).filter((r: any) => r.subjectId);
+    const items = raw
+      .map((item: any) => mapSubject(item.subject || item, item.detailPath))
+      .filter(Boolean);
+
+    for (const item of items) this.rememberSlug(item.subjectId, item.detailPath);
 
     const total = inner.pager?.totalCount || inner.total || items.length;
     return { items, total, page };
@@ -178,14 +215,13 @@ export class MovieBoxH5Scraper implements Scraper {
   async suggest(query: string): Promise<SuggestResult[]> {
     if (query.length < 2) return [];
 
-    const headers = await this.authHeaders();
     const body = JSON.stringify({ keyword: query, perPage: 10 });
-    const response = await request(`${API_H5_URL}${ENDPOINTS.h5SearchSuggest}`, { method: 'POST', headers, body });
-
-    if (response.status !== 200) return [];
-
-    await this.updateTokenFromResponse(response.headers);
-    const json = await response.json();
+    let json: any;
+    try {
+      json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5SearchSuggest}`, { method: 'POST', body });
+    } catch {
+      return [];
+    }
     const inner = json?.data || {};
     const raw = inner.items || inner.list || [];
 
@@ -194,125 +230,170 @@ export class MovieBoxH5Scraper implements Scraper {
       return {
         title: sub.title || item.word || '',
         subjectId: String(sub.subjectId || item.subjectId || ''),
+        detailPath: sub.detailPath || item.detailPath || '',
       };
     }).filter((s: { title: string }) => s.title);
   }
 
   async detail(subjectId: string): Promise<DetailResult> {
-    const headers = await this.authHeaders();
-    const response = await request(`${API_H5_URL}${ENDPOINTS.h5Detail}?subjectId=${subjectId}`, { headers });
-
-    if (response.status !== 200) {
-      throw new Error(`H5 detail failed: ${response.status}`);
-    }
-
-    await this.updateTokenFromResponse(response.headers);
-    const json = await response.json();
+    const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Detail}?subjectId=${subjectId}`);
     const data = json?.data || {};
     const sub = data.subject || data;
+    const resource = data.resource || {};
+
+    const detailPath = sub.detailPath || '';
+    this.rememberSlug(String(sub.subjectId || subjectId), detailPath);
+
+    const seasons = (resource.seasons || []).map((s: any) => ({
+      season: s.se ?? 0,
+      maxEpisodes: s.maxEp ?? 0,
+    }));
+
+    const dubs = (sub.dubs || []).map((d: any) => ({
+      subjectId: String(d.subjectId || ''),
+      language: d.lanName || d.language || d.lan || 'Unknown',
+    })).filter((d: any) => d.subjectId);
+
+    const castList = (data.stars || sub.castList || sub.staffList || [])
+      .map((c: any) => c.name || c.staffName || (typeof c === 'string' ? c : ''))
+      .filter(Boolean);
 
     return {
-      subjectId: String(sub.subjectId || ''),
+      subjectId: String(sub.subjectId || subjectId),
+      detailPath,
       title: sub.title || '',
       posterUrl: sub.cover?.url || '',
       coverUrl: sub.cover?.url || sub.poster?.url,
       type: sub.subjectType === 2 ? 'series' : 'movie',
       year: sub.releaseDate?.substring(0, 4),
       rating: sub.imdbRatingValue || undefined,
-      genres: sub.genreNames ? (Array.isArray(sub.genreNames) ? sub.genreNames : [sub.genreNames]) : undefined,
-      plot: sub.introduction || sub.description,
+      genres: sub.genre ? String(sub.genre).split(',').map((g: string) => g.trim()) : undefined,
+      plot: sub.description || sub.introduction,
       duration: sub.duration ? `${Math.floor(Number(sub.duration) / 60)}m` : undefined,
       country: sub.countryName,
-      cast: sub.castList?.map((c: any) => c.name || c) || undefined,
-      dubs: [],
-      seasons: undefined,
-      freeEpisodes: sub.freeNum || 0,
+      cast: castList.length > 0 ? castList : undefined,
+      dubs,
+      seasons: seasons.length > 0 ? seasons : undefined,
+      freeEpisodes: sub.freeNum || data.watchTimeLimit?.freeNum || 0,
     };
   }
 
-  async stream(subjectId: string, season?: number, episode?: number): Promise<StreamResult> {
-    const se = season || 1;
-    const ep = episode || 1;
-
-    const domHeaders = await this.authHeaders();
-    const domResponse = await request(`${API_H5_URL}${ENDPOINTS.h5PlayDomain}`, { headers: domHeaders });
-
-    if (domResponse.status !== 200) {
-      throw new Error(`H5 get-domain failed: ${domResponse.status}`);
+  private async resolveSlug(subjectId: string, detailPath?: string): Promise<string> {
+    if (detailPath) return detailPath;
+    const cached = this.slugCache.get(subjectId);
+    if (cached) return cached;
+    const d = await this.detail(subjectId);
+    if (!d.detailPath) {
+      throw new Error(`Cannot resolve detailPath slug for subject ${subjectId}`);
     }
+    return d.detailPath;
+  }
 
-    await this.updateTokenFromResponse(domResponse.headers);
-    const domJson = await domResponse.json();
-    const domain = (domJson?.data || 'https://netfilm.world').replace(/\/$/, '');
+  private hasAnyStream(playData: any): boolean {
+    return (playData?.streams?.length || 0) + (playData?.dash?.length || 0) + (playData?.hls?.length || 0) > 0;
+  }
 
-    const detailPath = subjectId;
-    const playerReferer = `${domain}/spa/videoPlayPage/movies/${detailPath}?id=${subjectId}&type=/movie/detail&detailSe=${se}&detailEp=${ep}&lang=en`;
+  private async fetchPlay(domain: string, subjectId: string, slug: string, se: number, ep: number): Promise<any> {
+    const playerReferer = `${domain}/spa/videoPlayPage/movies/${slug}?id=${subjectId}&type=/movie/detail&detailSe=${se}&detailEp=${ep}&lang=en`;
+    const playUrl = `${domain}${ENDPOINTS.h5Play}?subjectId=${subjectId}&se=${se}&ep=${ep}&detailPath=${slug}`;
 
-    const playUrl = `${domain}${ENDPOINTS.h5Play}?subjectId=${subjectId}&se=${se}&ep=${ep}&detailPath=${detailPath}`;
     const playResponse = await request(playUrl, {
       headers: { ...PLAYER_HEADERS, 'Referer': playerReferer },
     });
 
     if (playResponse.status !== 200) {
-      return { sources: [], dubs: [], subtitles: [], hasResource: false, freeEpisodes: 0 };
+      throw new Error(`H5 play failed: ${playResponse.status}`);
     }
 
     const playJson = await playResponse.json();
-    const playData = playJson?.data || {};
-    const streams = playData.streams || [];
+    return playJson?.data || {};
+  }
 
-    const sources = streams.map((s: any) => ({
+  async stream(subjectId: string, season?: number, episode?: number, detailPath?: string): Promise<StreamResult> {
+    const se = season ?? 1;
+    const ep = episode ?? 1;
+
+    // Le slug detailPath est OBLIGATOIRE : sans lui l'upstream renvoie streams:[]
+    const slug = await this.resolveSlug(subjectId, detailPath);
+
+    const domJson = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5PlayDomain}`);
+    const domain = String(domJson?.data || 'https://netfilm.world').replace(/\/$/, '');
+
+    let playData = await this.fetchPlay(domain, subjectId, slug, se, ep);
+
+    // Convention upstream : les films utilisent se=0&ep=0. Si un client demande
+    // S1E1 (défaut) et n'obtient rien, on retente en mode film.
+    if (!this.hasAnyStream(playData) && se === 1 && ep === 1) {
+      playData = await this.fetchPlay(domain, subjectId, slug, 0, 0);
+    }
+    const rawStreams = [...(playData.streams || []), ...(playData.dash || []), ...(playData.hls || [])];
+
+
+    const seen = new Set<string>();
+    const sources = rawStreams.map((s: any) => ({
+      id: s.id || undefined,
       url: s.url || '',
       format: s.format === 'HLS' ? 'HLS' : s.format === 'DASH' ? 'DASH' : 'MP4',
       quality: parseInt(String(s.resolutions || '0').replace(/\D/g, '')) || 0,
       size: s.size ? Number(s.size) : undefined,
       duration: s.duration ? Number(s.duration) : undefined,
       codec: s.codecName || 'h264',
-    })).filter((s: any) => s.url);
+    })).filter((s: any) => {
+      if (!s.url || seen.has(s.url)) return false;
+      seen.add(s.url);
+      return true;
+    });
+
+    const subtitles = await this.fetchCaptions(subjectId, slug, sources[0]);
 
     return {
       sources,
       dubs: [],
-      subtitles: [],
-      hasResource: sources.length > 0 || (playData.dash?.length || 0) > 0 || (playData.hls?.length || 0) > 0,
+      subtitles,
+      hasResource: sources.length > 0,
       freeEpisodes: playData.freeNum || 0,
     };
   }
 
-  async category(tabId: string, page: number = 1): Promise<{ items: any[]; page: number; hasMore: boolean }> {
-    const headers = await this.authHeaders();
-    const body = JSON.stringify({
-      tabId: Number(tabId),
-      filter: { sort: 'RECOMMEND', genre: 'ALL', country: 'ALL', year: 'ALL', language: 'ALL' },
-      page,
-      perPage: 24,
-    });
-
-    const response = await request(`${API_H5_URL}${ENDPOINTS.h5Search}`, { method: 'POST', headers, body });
-
-    if (response.status !== 200) {
-      throw new Error(`H5 category failed: ${response.status}`);
+  private async fetchCaptions(
+    subjectId: string,
+    slug: string,
+    firstSource?: { id?: string; format?: string }
+  ): Promise<{ url: string; language: string }[]> {
+    if (!firstSource?.id) return [];
+    try {
+      const url = `${API_H5_URL}${ENDPOINTS.h5Caption}?format=${firstSource.format || 'MP4'}&id=${firstSource.id}&subjectId=${subjectId}&detailPath=${slug}`;
+      const json = await this.authedRequest(url);
+      const inner = json?.data || {};
+      const captions = Array.isArray(inner) ? inner : (inner.captions || []);
+      return captions.map((c: any) => ({
+        url: c.url || '',
+        language: c.lanName || c.language || c.lan || 'Unknown',
+      })).filter((c: any) => c.url);
+    } catch {
+      return [];
     }
+  }
 
-    await this.updateTokenFromResponse(response.headers);
-    const json = await response.json();
+  async category(tabId: string, page: number = 1): Promise<{ items: any[]; page: number; hasMore: boolean }> {
+    // Onglets connus -> /subject/trending (validé en live) ; IDs legacy -> trending mixte
+    const upstreamTab = TRENDING_TAB_MAP[tabId] !== undefined ? TRENDING_TAB_MAP[tabId] : null;
+    const tabParam = upstreamTab ? `tabId=${upstreamTab}&` : '';
+    const url = `${API_H5_URL}${ENDPOINTS.h5Trending}?${tabParam}page=${page}&perPage=18`;
+
+    const json = await this.authedRequest(url);
     const inner = json?.data || {};
-    const raw = inner.items || inner.subjects || [];
+    const raw = inner.subjectList || inner.items || [];
 
-    const items = raw.map((sub: any) => ({
-      subjectId: String(sub.subjectId || ''),
-      title: sub.title || '',
-      posterUrl: sub.cover?.url || '',
-      type: sub.subjectType === 2 ? 'series' : 'movie',
-      rating: sub.imdbRatingValue || undefined,
-      year: sub.releaseDate?.substring(0, 4),
-      badge: sub.corner || undefined,
-    })).filter((i: any) => i.subjectId);
+    const items = raw
+      .map((sub: any) => mapSubject(sub.subject || sub))
+      .filter(Boolean);
 
-    const totalCount = inner.pager?.totalCount || inner.total || items.length;
-    const perPage = 24;
-    const totalPages = Math.ceil(totalCount / perPage);
+    for (const item of items) this.rememberSlug(item.subjectId, item.detailPath);
 
-    return { items, page, hasMore: page < totalPages };
+    const pager = inner.pager || {};
+    const hasMore = pager.hasMore === true || (typeof pager.nextPage === 'string' && pager.nextPage !== '');
+
+    return { items, page, hasMore };
   }
 }

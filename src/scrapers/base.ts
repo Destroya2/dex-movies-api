@@ -19,10 +19,12 @@ export interface SearchResult {
 export interface SuggestResult {
   title: string;
   subjectId: string;
+  detailPath?: string;
 }
 
 export interface DetailResult {
   subjectId: string;
+  detailPath?: string;
   title: string;
   posterUrl: string;
   coverUrl?: string;
@@ -53,7 +55,7 @@ export interface Scraper {
   search(query: string, page?: number): Promise<SearchResult>;
   suggest(query: string): Promise<SuggestResult[]>;
   detail(subjectId: string): Promise<DetailResult>;
-  stream(subjectId: string, season?: number, episode?: number): Promise<StreamResult>;
+  stream(subjectId: string, season?: number, episode?: number, detailPath?: string): Promise<StreamResult>;
   category(tabId: string, page?: number): Promise<{ items: any[]; page: number; hasMore: boolean }>;
   isAvailable(): Promise<boolean>;
 }
