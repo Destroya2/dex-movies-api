@@ -15,6 +15,17 @@ const H5_HEADERS = {
   'sec-ch-ua-platform': '"Windows"',
 };
 
+// IP d'une région autorisée (Nigeria). Le CDN player (netfilm.world) géo-bloque
+// les IP datacenter (ex: Vercel US) via X-Forwarded-For et répond
+// "403 invalid region" — ce spoof rétablit l'accès aux flux depuis n'importe où.
+const ALLOWED_REGION_IP = process.env.SPOOF_IP || '41.58.0.1';
+
+const GEO_SPOOF_HEADERS = {
+  'X-Forwarded-For': ALLOWED_REGION_IP,
+  'CF-Connecting-IP': ALLOWED_REGION_IP,
+  'X-Real-IP': ALLOWED_REGION_IP,
+};
+
 const PLAYER_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
   'Accept': 'application/json',
@@ -26,6 +37,7 @@ const PLAYER_HEADERS = {
   'sec-ch-ua': '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
   'sec-ch-ua-mobile': '?0',
   'sec-ch-ua-platform': '"Windows"',
+  ...GEO_SPOOF_HEADERS,
 };
 
 // Onglets exposés par notre API. Les IDs sont stables et résolus dans category().
