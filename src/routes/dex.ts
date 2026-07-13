@@ -229,4 +229,61 @@ router.get('/stream/:subjectId', cacheMiddleware('stream'), wrapAsync(async (req
   });
 }));
 
+/**
+ * Diagnostic temporaire : exécute le flux stream étape par étape et rapporte
+ * où ça casse depuis l'environnement d'exécution (Vercel vs local).
+ */
+router.get('/_debug/stream', wrapAsync(async (req, res) => {
+  const { request } = await import('../utils/http');
+  const { API_H5_URL, ENDPOINTS } = await import('../config/constants');
+
+  const subjectId = (req.query.subjectId as string) || '2226969025052033872';
+  const slug = (req.query.detailPath as string) || 'batman-caped-crusader-Sxx7RwAxvE2';
+  const steps: any[] = [];
+
+  const H5: Record<string, string> = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36',
+    'Referer': 'https://moviebox.ph/',
+    'Origin': 'https://moviebox.ph',
+    'X-Client-Info': '{"timezone":"Asia/Dhaka"}',
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+  };
+
+  let token = '';
+  try {
+    const r = await request(`${API_H5_URL}${ENDPOINTS.h5Home}?host=moviebox.ph`, { headers: H5 });
+    token = JSON.parse(r.headers['x-user'] || '{}').token || '';
+    steps.push({ step: 'token', status: r.status, ok: !!token });
+  } catch (e: any) {
+    steps.push({ step: 'token', error: e.message });
+    res.json({ steps });
+    return;
+  }
+
+  const auth = { ...H5, Authorization: `Bearer ${token}` };
+
+  let domain = 'https://netfilm.world';
+  try {
+    const r = await request(`${API_H5_URL}${ENDPOINTS.h5PlayDomain}`, { headers: auth });
+    const j = await r.json();
+    domain = String(j?.data || domain).replace(/\/$/, '');
+    steps.push({ step: 'get-domain', status: r.status, domain });
+  } catch (e: any) {
+    steps.push({ step: 'get-domain', error: e.message });
+  }
+
+  const playUrl = `${domain}${ENDPOINTS.h5Play}?subjectId=${subjectId}&se=1&ep=1&detailPath=${slug}`;
+  try {
+    const referer = `${domain}/spa/videoPlayPage/movies/${slug}?id=${subjectId}&type=/movie/detail&detailSe=1&detailEp=1&lang=en`;
+    const r = await request(playUrl, { headers: { ...auth, Referer: referer } });
+    const body = r.body.substring(0, 400);
+    steps.push({ step: 'play', url: playUrl, status: r.status, body });
+  } catch (e: any) {
+    steps.push({ step: 'play', url: playUrl, error: e.message });
+  }
+
+  res.json({ steps });
+}));
+
 export default router;
