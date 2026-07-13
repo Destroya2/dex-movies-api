@@ -273,14 +273,29 @@ router.get('/_debug/stream', wrapAsync(async (req, res) => {
     steps.push({ step: 'get-domain', error: e.message });
   }
 
-  const playUrl = `${domain}${ENDPOINTS.h5Play}?subjectId=${subjectId}&se=1&ep=1&detailPath=${slug}`;
-  try {
-    const referer = `${domain}/spa/videoPlayPage/movies/${slug}?id=${subjectId}&type=/movie/detail&detailSe=1&detailEp=1&lang=en`;
-    const r = await request(playUrl, { headers: { ...auth, Referer: referer } });
-    const body = r.body.substring(0, 400);
-    steps.push({ step: 'play', url: playUrl, status: r.status, body });
-  } catch (e: any) {
-    steps.push({ step: 'play', url: playUrl, error: e.message });
+  // netfilm.world répond 403 "invalid region" depuis les IP Vercel :
+  // on teste plusieurs IP de spoof + le domaine h5api direct pour trouver une voie qui passe.
+  const spoofCandidates: Record<string, Record<string, string>> = {
+    'no-spoof': {},
+    'ip-NG': { 'X-Forwarded-For': '41.58.0.1', 'CF-Connecting-IP': '41.58.0.1', 'X-Real-IP': '41.58.0.1' },
+    'ip-BD': { 'X-Forwarded-For': '103.108.144.1', 'CF-Connecting-IP': '103.108.144.1', 'X-Real-IP': '103.108.144.1' },
+    'ip-1.1.1.1': { 'X-Forwarded-For': '1.1.1.1', 'CF-Connecting-IP': '1.1.1.1', 'X-Real-IP': '1.1.1.1' },
+  };
+
+  const bases = [domain, API_H5_URL];
+  for (const base of bases) {
+    const playUrl = `${base}${ENDPOINTS.h5Play}?subjectId=${subjectId}&se=1&ep=1&detailPath=${slug}`;
+    const referer = `${base}/spa/videoPlayPage/movies/${slug}?id=${subjectId}&type=/movie/detail&detailSe=1&detailEp=1&lang=en`;
+    for (const [label, spoof] of Object.entries(spoofCandidates)) {
+      try {
+        const r = await request(playUrl, { headers: { ...auth, Referer: referer, ...spoof } });
+        let streams = -1;
+        try { streams = (JSON.parse(r.body)?.data?.streams || []).length; } catch { }
+        steps.push({ step: `play ${base}[${label}]`, status: r.status, streams, body: r.body.substring(0, 120) });
+      } catch (e: any) {
+        steps.push({ step: `play ${base}[${label}]`, error: e.message });
+      }
+    }
   }
 
   res.json({ steps });
