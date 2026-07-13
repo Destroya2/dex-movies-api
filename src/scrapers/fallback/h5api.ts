@@ -55,11 +55,38 @@ const TRENDING_TAB_MAP: Record<string, string | null> = {
   series: '5',
 };
 
+// Détecte si un contenu est en version française (VF/VOSTFR) à partir de son
+// titre, de son slug ou de ses genres. Sert à remonter la VF en priorité.
+const FRENCH_RE = /version\s*fran[cç]ais|fran[cç]ais|\bvf\b|\bvostfr\b|\bfrench\b|-vf-|-vf$/i;
+
+export function isFrenchContent(item: {
+  title?: string;
+  detailPath?: string;
+  genres?: string[];
+  badge?: string;
+}): boolean {
+  const haystack = [
+    item.title || '',
+    item.detailPath || '',
+    item.badge || '',
+    ...(item.genres || []),
+  ].join(' ');
+  return FRENCH_RE.test(haystack);
+}
+
+// Tri stable qui remonte les versions françaises en tête, sans retirer le reste.
+export function prioritizeFrench<T extends Record<string, any>>(items: T[]): T[] {
+  return items
+    .map((item, index) => ({ item, index, fr: isFrenchContent(item) }))
+    .sort((a, b) => (a.fr === b.fr ? a.index - b.index : a.fr ? -1 : 1))
+    .map((x) => x.item);
+}
+
 function mapSubject(sub: any, fallbackDetailPath?: string): any | null {
   if (!sub) return null;
   const subjectId = sub.subjectId;
   if (!subjectId) return null;
-  return {
+  const item: any = {
     subjectId: String(subjectId),
     detailPath: sub.detailPath || fallbackDetailPath || '',
     title: sub.title || 'Unknown',
@@ -70,6 +97,8 @@ function mapSubject(sub: any, fallbackDetailPath?: string): any | null {
     badge: sub.corner || undefined,
     genres: sub.genre ? String(sub.genre).split(',').map((g: string) => g.trim()) : undefined,
   };
+  item.isFrench = isFrenchContent(item);
+  return item;
 }
 
 export class MovieBoxH5Scraper implements Scraper {
@@ -194,7 +223,7 @@ export class MovieBoxH5Scraper implements Scraper {
           sections.push({ id: 'banner', title: 'Featured', type: 'banner', items });
         }
       } else if (['SUBJECTS_MOVIE', 'SUBJECTS_TV', 'SUBJECTS_ANIMATION'].includes(opType)) {
-        const items = (op.subjects || []).map((sub: any) => mapSubject(sub)).filter(Boolean);
+        const items = prioritizeFrench((op.subjects || []).map((sub: any) => mapSubject(sub)).filter(Boolean));
         if (items.length > 0) {
           sections.push({ id: op.opId || opType, title, type: 'row', items });
         }
@@ -214,9 +243,11 @@ export class MovieBoxH5Scraper implements Scraper {
     const inner = json?.data || {};
     const raw = inner.items || inner.list || [];
 
-    const items = raw
-      .map((item: any) => mapSubject(item.subject || item, item.detailPath))
-      .filter(Boolean);
+    const items = prioritizeFrench(
+      raw
+        .map((item: any) => mapSubject(item.subject || item, item.detailPath))
+        .filter(Boolean)
+    );
 
     for (const item of items) this.rememberSlug(item.subjectId, item.detailPath);
 
@@ -237,7 +268,7 @@ export class MovieBoxH5Scraper implements Scraper {
     const inner = json?.data || {};
     const raw = inner.items || inner.list || [];
 
-    return raw.map((item: any) => {
+    const suggestions = raw.map((item: any) => {
       const sub = item.subject || item;
       return {
         title: sub.title || item.word || '',
@@ -245,6 +276,8 @@ export class MovieBoxH5Scraper implements Scraper {
         detailPath: sub.detailPath || item.detailPath || '',
       };
     }).filter((s: { title: string }) => s.title);
+
+    return prioritizeFrench(suggestions);
   }
 
   async detail(subjectId: string): Promise<DetailResult> {
@@ -397,9 +430,11 @@ export class MovieBoxH5Scraper implements Scraper {
     const inner = json?.data || {};
     const raw = inner.subjectList || inner.items || [];
 
-    const items = raw
-      .map((sub: any) => mapSubject(sub.subject || sub))
-      .filter(Boolean);
+    const items = prioritizeFrench(
+      raw
+        .map((sub: any) => mapSubject(sub.subject || sub))
+        .filter(Boolean)
+    );
 
     for (const item of items) this.rememberSlug(item.subjectId, item.detailPath);
 
