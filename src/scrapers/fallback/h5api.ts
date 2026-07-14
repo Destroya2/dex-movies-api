@@ -442,27 +442,48 @@ export class MovieBoxH5Scraper implements Scraper {
     }
   }
 
+  // Le endpoint /subject/trending renvoie un catalogue GLOBAL (anglophone) même
+  // depuis la région FR. Pour un Explorer francophone, on agrège plutôt les
+  // sections du home (riche en VF) et on pagine côté serveur.
+  private homeItemsCache: { at: number; movies: any[]; series: any[]; all: any[] } | null = null;
+  private readonly HOME_ITEMS_TTL = 5 * 60 * 1000;
+
+  private async getHomeItems(): Promise<{ movies: any[]; series: any[]; all: any[] }> {
+    if (this.homeItemsCache && Date.now() - this.homeItemsCache.at < this.HOME_ITEMS_TTL) {
+      return this.homeItemsCache;
+    }
+    const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Home}?host=moviebox.ph`);
+    const ops = json?.data?.operatingList || [];
+    const seen = new Set<string>();
+    const all: any[] = [];
+    for (const op of ops) {
+      if (!['SUBJECTS_MOVIE', 'SUBJECTS_TV', 'SUBJECTS_ANIMATION'].includes(op.type)) continue;
+      for (const sub of op.subjects || []) {
+        const item = mapSubject(sub);
+        if (!item || seen.has(item.subjectId)) continue;
+        seen.add(item.subjectId);
+        all.push(item);
+        this.rememberSlug(item.subjectId, item.detailPath);
+      }
+    }
+    const cache = {
+      at: Date.now(),
+      movies: prioritizeFrench(all.filter((i) => i.type === 'movie')),
+      series: prioritizeFrench(all.filter((i) => i.type === 'series')),
+      all: prioritizeFrench(all),
+    };
+    this.homeItemsCache = cache;
+    return cache;
+  }
+
   async category(tabId: string, page: number = 1): Promise<{ items: any[]; page: number; hasMore: boolean }> {
-    // Onglets connus -> /subject/trending (validé en live) ; IDs legacy -> trending mixte
-    const upstreamTab = TRENDING_TAB_MAP[tabId] !== undefined ? TRENDING_TAB_MAP[tabId] : null;
-    const tabParam = upstreamTab ? `tabId=${upstreamTab}&` : '';
-    const url = `${API_H5_URL}${ENDPOINTS.h5Trending}?${tabParam}page=${page}&perPage=18`;
+    const home = await this.getHomeItems();
+    const list = tabId === 'movies' ? home.movies : tabId === 'series' ? home.series : home.all;
 
-    const json = await this.authedRequest(url);
-    const inner = json?.data || {};
-    const raw = inner.subjectList || inner.items || [];
+    const perPage = 24;
+    const start = (page - 1) * perPage;
+    const slice = list.slice(start, start + perPage);
 
-    const items = prioritizeFrench(
-      raw
-        .map((sub: any) => mapSubject(sub.subject || sub))
-        .filter(Boolean)
-    );
-
-    for (const item of items) this.rememberSlug(item.subjectId, item.detailPath);
-
-    const pager = inner.pager || {};
-    const hasMore = pager.hasMore === true || (typeof pager.nextPage === 'string' && pager.nextPage !== '');
-
-    return { items, page, hasMore };
+    return { items: slice, page, hasMore: start + perPage < list.length };
   }
 }
