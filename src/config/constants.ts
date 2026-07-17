@@ -1,6 +1,13 @@
 export const API_BASE_URL = process.env.API_BASE_URL || 'https://api3.aoneroom.com';
 export const API_H5_URL = process.env.API_H5_URL || 'https://h5-api.aoneroom.com';
 
+// Hôtes miroirs du backend v2 (tous servent le même API h5api-bff).
+// Testés depuis Vercel : h5-api.aoneroom.com et moviebox.ph répondent 200.
+export const API_H5_MIRRORS: string[] = [
+  'https://h5-api.aoneroom.com',
+  'https://moviebox.ph',
+];
+
 export const ENDPOINTS = {
   rankingList: '/wefeed-mobile-bff/tab/ranking-list',
   subjectList: '/wefeed-mobile-bff/subject-api/list',

@@ -1,5 +1,5 @@
 import { request } from '../../utils/http';
-import { API_H5_URL, ENDPOINTS } from '../../config/constants';
+import { API_H5_URL, API_H5_MIRRORS, ENDPOINTS } from '../../config/constants';
 import { Scraper, ScraperConfig, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult } from '../base';
 
 // MovieBox sert un catalogue DIFFÉRENT selon la région de l'IP appelante :
@@ -148,29 +148,32 @@ export class MovieBoxH5Scraper implements Scraper {
       return this.bearerToken;
     }
 
-    const response = await request(`${API_H5_URL}${ENDPOINTS.h5Home}?host=moviebox.ph`, { headers: H5_HEADERS });
-
-    if (response.status === 200) {
-      const xUser = response.headers['x-user'];
-      if (xUser) {
-        const parsed = JSON.parse(xUser);
-        if (parsed.token) {
-          this.bearerToken = parsed.token;
-          this.lastTokenFetch = Date.now();
-          return this.bearerToken!;
+    const hosts = [...new Set([API_H5_URL, ...API_H5_MIRRORS])];
+    for (const baseUrl of hosts) {
+      try {
+        const response = await request(`${baseUrl}${ENDPOINTS.h5Home}?host=moviebox.ph`, { headers: H5_HEADERS });
+        if (response.status === 200) {
+          const xUser = response.headers['x-user'];
+          if (xUser) {
+            const parsed = JSON.parse(xUser);
+            if (parsed.token) {
+              this.bearerToken = parsed.token;
+              this.lastTokenFetch = Date.now();
+              return this.bearerToken!;
+            }
+          }
+          const setCookie = response.headers['set-cookie'] || '';
+          const match = setCookie.match(/token=([^;]+)/);
+          if (match) {
+            this.bearerToken = match[1];
+            this.lastTokenFetch = Date.now();
+            return this.bearerToken!;
+          }
         }
-      }
-
-      const setCookie = response.headers['set-cookie'] || '';
-      const match = setCookie.match(/token=([^;]+)/);
-      if (match) {
-        this.bearerToken = match[1];
-        this.lastTokenFetch = Date.now();
-        return this.bearerToken!;
-      }
+      } catch {}
     }
 
-    throw new Error('Failed to acquire H5 guest bearer token');
+    throw new Error('Failed to acquire H5 guest bearer token from any mirror');
   }
 
   private async authHeaders(): Promise<Record<string, string>> {
@@ -191,23 +194,32 @@ export class MovieBoxH5Scraper implements Scraper {
     }
   }
 
-  // GET/POST authentifié avec un retry sur 401/403 (token invité expiré)
+  // GET/POST authentifié avec retry sur 401/403 + fallback vers les miroirs
   private async authedRequest(url: string, opts: { method?: string; body?: string } = {}): Promise<any> {
-    let headers = await this.authHeaders();
-    let response = await request(url, { ...opts, headers });
+    // Extraire le chemin de l'URL (enlève le protocole + hôte)
+    const path = url.replace(/^https?:\/\/[^\/]+/, '');
+    const hosts = [...new Set([API_H5_URL, ...API_H5_MIRRORS])];
 
-    if (response.status === 401 || response.status === 403) {
-      await this.acquireBearerToken(true);
-      headers = await this.authHeaders();
-      response = await request(url, { ...opts, headers });
+    for (const baseUrl of hosts) {
+      const targetUrl = baseUrl + path;
+      try {
+        let headers = await this.authHeaders();
+        let response = await request(targetUrl, { ...opts, headers });
+
+        if (response.status === 401 || response.status === 403) {
+          await this.acquireBearerToken(true);
+          headers = await this.authHeaders();
+          response = await request(targetUrl, { ...opts, headers });
+        }
+
+        if (response.status === 200) {
+          this.updateTokenFromResponse(response.headers);
+          return response.json();
+        }
+      } catch {}
     }
 
-    if (response.status !== 200) {
-      throw new Error(`H5 request failed (${response.status}): ${url}`);
-    }
-
-    this.updateTokenFromResponse(response.headers);
-    return response.json();
+    throw new Error(`H5 request failed (all mirrors): ${path}`);
   }
 
   async isAvailable(): Promise<boolean> {
