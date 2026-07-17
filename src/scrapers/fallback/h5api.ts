@@ -109,6 +109,11 @@ function mapSubject(sub: any, fallbackDetailPath?: string): any | null {
     genres: sub.genre ? String(sub.genre).split(',').map((g: string) => g.trim()) : undefined,
     // Langues de sous-titres disponibles (chaîne CSV côté upstream)
     subtitleLangs: sub.subtitles ? String(sub.subtitles) : undefined,
+    // Métadonnées enrichies : permettent un écran détail complet même quand
+    // l'API /detail renvoie 404 (titres récents), via le repli côté app.
+    plot: sub.description || sub.introduction || undefined,
+    duration: sub.duration ? `${Math.floor(Number(sub.duration) / 60)}m` : undefined,
+    country: sub.countryName || undefined,
   };
   item.isFrench = isFrenchContent({ ...item, badge: corner });
   item.language = languageLabel(corner, item.isFrench);
