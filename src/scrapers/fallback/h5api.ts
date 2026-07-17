@@ -1,5 +1,5 @@
 import { request } from '../../utils/http';
-import { API_H5_URL, API_H5_MIRRORS, ENDPOINTS, H5_FILTER_TAB_IDS } from '../../config/constants';
+import { API_H5_URL, API_H5_MIRRORS, API_WEB_URL, API_WEB_MIRRORS, ENDPOINTS } from '../../config/constants';
 import { Scraper, ScraperConfig, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult } from '../base';
 
 const ALLOWED_REGION_IP = process.env.SPOOF_IP || '196.28.244.1';
@@ -116,6 +116,12 @@ export class MovieBoxH5Scraper implements Scraper {
   private slugCache = new Map<string, string>();
   // Cache les infos VF du home pour enrichir les items du filtre (qui n'ont pas de corner)
   private homeFrenchCache = new Map<string, { isFrench: boolean; language?: string; badge?: string }>();
+
+  // Cache de l'agrégation du home francophone (source de l'Explorer/Recommandations).
+  // Le home upstream expose ~200 titres VF répartis en sections ; on les agrège,
+  // dédoublonne et pagine côté serveur. TTL court car le home bouge peu.
+  private homeAggCache: { items: any[]; fetchedAt: number } | null = null;
+  private readonly HOME_AGG_TTL = 5 * 60 * 1000;
 
   private rememberSlug(subjectId: string, detailPath?: string): void {
     if (subjectId && detailPath) {
@@ -462,25 +468,99 @@ export class MovieBoxH5Scraper implements Scraper {
     }
   }
 
+  /**
+   * Agrège toutes les sections de contenu du home francophone en une liste
+   * unique dédoublonnée, triée French-first, musique exclue. Mise en cache
+   * (TTL court). C'est la SEULE source VF fiable : l'endpoint `/subject/filter`
+   * ignore le filtre `classify=French dub` et renvoie de la musique / du
+   * contenu anglophone (vérifié en sondant l'upstream).
+   */
+  private async getHomeAggregatedItems(): Promise<any[]> {
+    if (this.homeAggCache && Date.now() - this.homeAggCache.fetchedAt < this.HOME_AGG_TTL) {
+      return this.homeAggCache.items;
+    }
+
+    const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Home}?host=moviebox.ph`);
+    const operatingList = json?.data?.operatingList || [];
+
+    const byId = new Map<string, any>();
+    for (const op of operatingList) {
+      if (!['SUBJECTS_MOVIE', 'SUBJECTS_TV', 'SUBJECTS_ANIMATION'].includes(op.type)) continue;
+      for (const sub of op.subjects || []) {
+        // subjectType 6 = musique : jamais dans l'Explorer d'une app de films
+        if (sub?.subjectType === 6) continue;
+        const item = mapSubject(sub);
+        if (!item) continue;
+        if (!byId.has(item.subjectId)) byId.set(item.subjectId, item);
+      }
+    }
+
+    const items = prioritizeFrench([...byId.values()]);
+    for (const item of items) {
+      this.rememberSlug(item.subjectId, item.detailPath);
+      if (item.isFrench || item.language || item.badge) {
+        this.homeFrenchCache.set(item.subjectId, {
+          isFrench: item.isFrench, language: item.language, badge: item.badge,
+        });
+      }
+    }
+
+    this.homeAggCache = { items, fetchedAt: Date.now() };
+    return items;
+  }
+
+  /**
+   * Explorer / Recommandations : pagination côté serveur de l'agrégation du
+   * home francophone. tabId = trending (tout) / movies / series.
+   */
   async category(tabId: string, page: number = 1): Promise<{ items: any[]; page: number; hasMore: boolean }> {
-    const upstreamTabId = H5_FILTER_TAB_IDS[tabId] ?? (isNaN(Number(tabId)) ? 0 : Number(tabId));
     const perPage = 24;
+    const all = await this.getHomeAggregatedItems();
 
-    const body = JSON.stringify({
-      tabId: upstreamTabId,
-      filter: { sort: 'RECOMMEND', genre: 'ALL', country: 'ALL', year: 'ALL', language: 'ALL' },
-      page,
-      perPage,
-    });
+    const filtered = tabId === 'movies'
+      ? all.filter((i) => i.type === 'movie')
+      : tabId === 'series'
+        ? all.filter((i) => i.type === 'series')
+        : all; // trending / défaut : tout
 
-    const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Filter}`, { method: 'POST', body });
+    const start = (page - 1) * perPage;
+    const items = filtered.slice(start, start + perPage);
+    const hasMore = start + perPage < filtered.length;
+
+    return { items, page, hasMore };
+  }
+
+  /**
+   * Requête vers les endpoints du site web (hôte API_WEB_URL). Ces endpoints
+   * n'exigent pas de token bearer, seulement le géo-spoof. Essaie chaque miroir.
+   */
+  private async webRequest(path: string, referer?: string): Promise<any> {
+    const hosts = [...new Set([API_WEB_URL, ...API_WEB_MIRRORS])];
+    for (const baseUrl of hosts) {
+      try {
+        const headers = { ...H5_HEADERS, ...(referer ? { Referer: referer } : {}) };
+        const response = await request(`${baseUrl}${path}`, { headers });
+        if (response.status === 200) return response.json();
+      } catch {}
+    }
+    throw new Error(`Web request failed (all mirrors): ${path}`);
+  }
+
+  /**
+   * Recommandations « Pour vous » pour un titre donné (endpoint web detail-rec).
+   * Enrichit la VF depuis le cache home et trie French-first.
+   */
+  async recommendations(subjectId: string, page: number = 1): Promise<{ items: any[]; page: number; hasMore: boolean }> {
+    const perPage = 18;
+    const json = await this.webRequest(
+      `${ENDPOINTS.webDetailRec}?subjectId=${subjectId}&page=${page}&perPage=${perPage}`
+    );
     const inner = json?.data || {};
-    const rawItems = inner.items || inner.subjects || [];
+    const raw = inner.items || inner.subjects || inner.list || [];
 
-    const items = rawItems.map((sub: any) => {
-      const item = mapSubject(sub);
+    const items = raw.map((entry: any) => {
+      const item = mapSubject(entry.subject || entry);
       if (!item) return null;
-      // Enrichir avec le cache VF du home (le filtre ne renvoie pas le champ corner)
       const cached = this.homeFrenchCache.get(item.subjectId);
       if (cached && !item.isFrench) {
         item.isFrench = cached.isFrench;
@@ -493,8 +573,42 @@ export class MovieBoxH5Scraper implements Scraper {
 
     const pager = inner.pager || {};
     const total = pager.totalCount || inner.total || items.length;
-    const hasMore = page * perPage < total;
+    return { items: prioritizeFrench(items), page, hasMore: page * perPage < total };
+  }
 
-    return { items, page, hasMore };
+  /**
+   * Liste directe des fichiers téléchargeables (MP4 par qualité + taille exacte)
+   * pour un film/épisode, via l'endpoint web download. Plus fiable que de parser
+   * les streams de /subject/play pour le téléchargement.
+   */
+  async downloads(subjectId: string, season?: number, episode?: number, detailPath?: string): Promise<{ files: any[]; captions: any[]; hasResource: boolean }> {
+    const se = season ?? 0;
+    const ep = episode ?? 0;
+    const slug = await this.resolveSlug(subjectId, detailPath);
+    // Le Referer /movies/<slug> est OBLIGATOIRE, sinon réponse vide
+    const referer = `${API_WEB_URL}/movies/${slug}`;
+
+    const json = await this.webRequest(
+      `${ENDPOINTS.webDownload}?subjectId=${subjectId}&se=${se}&ep=${ep}`,
+      referer
+    );
+    const data = json?.data || {};
+    const rawDownloads = data.downloads || [];
+
+    const files = rawDownloads.map((d: any) => ({
+      id: d.id ? String(d.id) : undefined,
+      url: d.url || '',
+      format: 'MP4',
+      quality: Number(d.resolution) || 0,
+      size: d.size ? Number(d.size) : undefined,
+      duration: d.duration ? Number(d.duration) : undefined,
+    })).filter((f: any) => f.url);
+
+    const captions = (data.captions || []).map((c: any) => ({
+      url: c.url || '',
+      language: c.lanName || c.language || c.lan || 'Unknown',
+    })).filter((c: any) => c.url);
+
+    return { files, captions, hasResource: data.hasResource ?? files.length > 0 };
   }
 }

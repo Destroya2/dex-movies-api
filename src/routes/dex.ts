@@ -185,6 +185,82 @@ router.get('/trending', cacheMiddleware('home'), wrapAsync(async (req, res) => {
 
 /**
  * @openapi
+ * /api/dex/recommend/{subjectId}:
+ *   get:
+ *     tags: [Content]
+ *     summary: Recommandations « Pour vous » pour un titre
+ *     parameters:
+ *       - in: path
+ *         name: subjectId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *     responses:
+ *       200:
+ *         description: Recommended items
+ */
+router.get('/recommend/:subjectId', cacheMiddleware('home'), wrapAsync(async (req, res) => {
+  const subjectId = req.params.subjectId as string;
+  const page = parseInt(req.query.page as string) || 1;
+  if (!subjectId) throw new AppError(400, 'MISSING_ID', 'subjectId is required');
+  const { data, source } = await scraper.recommendations(subjectId, page);
+  res.json({
+    success: true,
+    data: { items: data.items, page, hasMore: data.hasMore },
+    meta: { source, cached: false, timestamp: Date.now() },
+  });
+}));
+
+/**
+ * @openapi
+ * /api/dex/download/{subjectId}:
+ *   get:
+ *     tags: [Stream]
+ *     summary: Fichiers téléchargeables (MP4 par qualité + taille)
+ *     parameters:
+ *       - in: path
+ *         name: subjectId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: season
+ *         schema:
+ *           type: integer
+ *       - in: query
+ *         name: episode
+ *         schema:
+ *           type: integer
+ *       - in: query
+ *         name: detailPath
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Downloadable files
+ */
+// Pas de cache : les URLs de téléchargement sont signées et expirent (comme /stream)
+router.get('/download/:subjectId', wrapAsync(async (req, res) => {
+  const subjectId = req.params.subjectId as string;
+  const season = parseInt((req.query.season ?? req.query.se) as string) || undefined;
+  const episode = parseInt((req.query.episode ?? req.query.ep) as string) || undefined;
+  const detailPath = (req.query.detailPath as string) || undefined;
+  if (!subjectId) throw new AppError(400, 'MISSING_ID', 'subjectId is required');
+  const { data, source } = await scraper.downloads(subjectId, season, episode, detailPath);
+  res.json({
+    success: true,
+    data,
+    meta: { source, cached: false, timestamp: Date.now() },
+  });
+}));
+
+/**
+ * @openapi
  * /api/dex/stream/{subjectId}:
  *   get:
  *     tags: [Stream]

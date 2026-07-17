@@ -52,6 +52,18 @@ export interface StreamResult {
   freeEpisodes: number;
 }
 
+export interface RecommendResult {
+  items: any[];
+  page: number;
+  hasMore: boolean;
+}
+
+export interface DownloadResult {
+  files: any[];
+  captions: any[];
+  hasResource: boolean;
+}
+
 export interface Scraper {
   config: ScraperConfig;
   home(page?: number): Promise<HomeResult>;
@@ -60,5 +72,8 @@ export interface Scraper {
   detail(subjectId: string): Promise<DetailResult>;
   stream(subjectId: string, season?: number, episode?: number, detailPath?: string): Promise<StreamResult>;
   category(tabId: string, page?: number): Promise<{ items: any[]; page: number; hasMore: boolean }>;
+  // Optionnels : implémentés par le scraper h5 (endpoints du site web)
+  recommendations?(subjectId: string, page?: number): Promise<RecommendResult>;
+  downloads?(subjectId: string, season?: number, episode?: number, detailPath?: string): Promise<DownloadResult>;
   isAvailable(): Promise<boolean>;
 }

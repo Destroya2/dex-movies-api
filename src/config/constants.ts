@@ -1,6 +1,15 @@
 export const API_BASE_URL = process.env.API_BASE_URL || 'https://api3.aoneroom.com';
 export const API_H5_URL = process.env.API_H5_URL || 'https://h5-api.aoneroom.com';
 
+// Hôte du site web MovieBox : sert les endpoints /wefeed-h5-bff/web/* (différents
+// de l'API h5api-bff). On y trouve les recommandations par titre (detail-rec) et
+// la liste directe des fichiers de téléchargement (download). Vérifié depuis Vercel.
+export const API_WEB_URL = process.env.API_WEB_URL || 'https://h5.aoneroom.com';
+export const API_WEB_MIRRORS: string[] = [
+  'https://h5.aoneroom.com',
+  'https://moviebox.ph',
+];
+
 // Hôtes miroirs du backend v2 (tous servent le même API h5api-bff).
 // Testés depuis Vercel : h5-api.aoneroom.com et moviebox.ph répondent 200.
 export const API_H5_MIRRORS: string[] = [
@@ -40,6 +49,10 @@ export const ENDPOINTS = {
   h5Trending: '/wefeed-h5api-bff/subject/trending',
   h5Filter: '/wefeed-h5api-bff/subject/filter',
   h5Caption: '/wefeed-h5api-bff/subject/caption',
+  // Endpoints du site web (hôte API_WEB_URL) : pas de token bearer requis,
+  // juste le géo-spoof. Découverts via le repo script-hunter-moviebox-api.
+  webDetailRec: '/wefeed-h5-bff/web/subject/detail-rec',
+  webDownload: '/wefeed-h5-bff/web/subject/download',
 };
 
 export const CDN_DOMAINS = [

@@ -47,14 +47,16 @@ async function main() {
     ok(`/category/${tab}`, items.length > 0, `${items.length} items, hasMore=${cat?.data?.hasMore}`);
   }
 
-  // 5. search
-  const search = await get('/api/dex/search?q=batman&nocache=1');
+  // 5. search — requête présente dans le catalogue VF (région francophone).
+  // NB : certains titres anglophones (ex. "batman") n'ont pas d'entrée VF
+  // indexée dans la région et renvoient légitimement 0 résultat.
+  const search = await get('/api/dex/search?q=spider&nocache=1');
   const searchItems = search?.data?.items || [];
   ok('/search items non vides', searchItems.length > 0, `${searchItems.length} items`);
   ok('/search items ont detailPath', !!searchItems[0]?.detailPath, searchItems[0]?.detailPath);
 
   // 6. suggest
-  const suggest = await get('/api/dex/suggest?q=bat');
+  const suggest = await get('/api/dex/suggest?q=spi');
   ok('/suggest non vide', (suggest?.data || []).length > 0, `${suggest?.data?.length} suggestions`);
 
   // 7. detail (série trouvée par la recherche)
@@ -72,7 +74,9 @@ async function main() {
   ok('/stream (avec detailPath) sources non vides', (stream1?.data?.sources || []).length > 0,
     `${stream1?.data?.sources?.length} sources, ex: ${stream1?.data?.sources?.[0]?.quality}p ${stream1?.data?.sources?.[0]?.format}`);
 
-  const stream2 = await get(`/api/dex/stream/${serie.subjectId}?season=1&episode=2&nocache=1`);
+  // Vérifie la résolution auto du slug quand l'appelant n'envoie PAS detailPath.
+  // épisode 1 : valide aussi bien pour un film que pour une série.
+  const stream2 = await get(`/api/dex/stream/${serie.subjectId}?season=1&episode=1&nocache=1`);
   ok('/stream (sans detailPath, résolution auto du slug) sources non vides', (stream2?.data?.sources || []).length > 0,
     `${stream2?.data?.sources?.length} sources`);
 
@@ -82,6 +86,20 @@ async function main() {
     const streamM = await get(`/api/dex/stream/${movie.subjectId}?detailPath=${movie.detailPath}&nocache=1`);
     ok(`/stream film ("${movie.title}") sources non vides`, (streamM?.data?.sources || []).length > 0,
       `${streamM?.data?.sources?.length} sources`);
+  }
+
+  // 10. recommend (« Pour vous ») pour le premier résultat de recherche
+  const first = searchItems[0];
+  if (first) {
+    const rec = await get(`/api/dex/recommend/${first.subjectId}?nocache=1`);
+    ok(`/recommend ("${first.title}")`, (rec?.data?.items || []).length > 0,
+      `${rec?.data?.items?.length} recommandations`);
+
+    // 11. download (fichiers par qualité) pour ce même titre
+    const dl = await get(`/api/dex/download/${first.subjectId}?detailPath=${first.detailPath}&nocache=1`);
+    const files = dl?.data?.files || [];
+    ok(`/download ("${first.title}")`, files.length > 0,
+      files.map((f: any) => `${f.quality}p`).join(','));
   }
 
   console.log(`\n${failures === 0 ? '🎉 TOUS LES TESTS PASSENT' : `⚠️ ${failures} échec(s)`}`);

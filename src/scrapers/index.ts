@@ -1,4 +1,4 @@
-import { Scraper, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult } from './base';
+import { Scraper, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult, RecommendResult, DownloadResult } from './base';
 import { MovieBoxMobileScraper } from './moviebox/index';
 import { MovieBoxH5Scraper } from './fallback/h5api';
 import { FlixHQScraper } from './flixhq';
@@ -90,5 +90,33 @@ export class ScraperEngine {
 
   async category(tabId: string, page: number = 1): Promise<{ data: { items: any[]; page: number; hasMore: boolean }; source: string }> {
     return this.execute('category', (s) => s.category(tabId, page), `category(${tabId})`);
+  }
+
+  /** Recommandations « Pour vous » — premier scraper qui implémente la méthode. */
+  async recommendations(subjectId: string, page: number = 1): Promise<{ data: RecommendResult; source: string }> {
+    for (const scraper of this.scrapers) {
+      if (!scraper.recommendations) continue;
+      try {
+        const data = await scraper.recommendations(subjectId, page);
+        if (data.items.length > 0) return { data, source: scraper.config.name };
+      } catch {}
+    }
+    return { data: { items: [], page, hasMore: false }, source: 'none' };
+  }
+
+  /** Fichiers téléchargeables — premier scraper qui implémente la méthode. */
+  async downloads(subjectId: string, season?: number, episode?: number, detailPath?: string): Promise<{ data: DownloadResult; source: string }> {
+    const errors: string[] = [];
+    for (const scraper of this.scrapers) {
+      if (!scraper.downloads) continue;
+      try {
+        const data = await scraper.downloads(subjectId, season, episode, detailPath);
+        if (data.files.length > 0) return { data, source: scraper.config.name };
+      } catch (e: any) {
+        errors.push(`${scraper.config.name}=${e?.message || e}`);
+      }
+    }
+    // Aucun fichier : réponse vide légitime (contenu en direct uniquement)
+    return { data: { files: [], captions: [], hasResource: false }, source: 'none' };
   }
 }
