@@ -1,13 +1,7 @@
 import { request } from '../../utils/http';
-import { API_H5_URL, API_H5_MIRRORS, ENDPOINTS } from '../../config/constants';
+import { API_H5_URL, API_H5_MIRRORS, ENDPOINTS, H5_FILTER_TAB_IDS } from '../../config/constants';
 import { Scraper, ScraperConfig, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult } from '../base';
 
-// MovieBox sert un catalogue DIFFÉRENT selon la région de l'IP appelante :
-// une IP US (Vercel) reçoit le catalogue anglophone (0 VF, sous-titres gérés
-// autrement), une IP d'Afrique de l'Ouest francophone reçoit le catalogue VF
-// (~190 titres "En français"). On présente donc une IP du Burkina Faso sur TOUS
-// les appels (contenu + lecteur + sous-titres) pour obtenir le flux francophone
-// et débloquer le CDN player. Surchargeable via SPOOF_IP.
 const ALLOWED_REGION_IP = process.env.SPOOF_IP || '196.28.244.1';
 
 const GEO_SPOOF_HEADERS = {
@@ -44,88 +38,74 @@ const PLAYER_HEADERS = {
   ...GEO_SPOOF_HEADERS,
 };
 
-// Onglets exposés par notre API. Les IDs sont stables et résolus dans category().
 const CATEGORY_TABS: { id: string; title: string }[] = [
   { id: 'trending', title: 'Trending' },
   { id: 'movies', title: 'Movies' },
   { id: 'series', title: 'TV Series' },
 ];
 
-// tabIds upstream de /subject/trending (validés en live) :
-// 2 = films (subjectType 1), 5 = séries/anime (subjectType 2), absent = mixte
-const TRENDING_TAB_MAP: Record<string, string | null> = {
-  trending: null,
-  movies: '2',
-  series: '5',
-};
+function getCornerLanguage(corner: string, title?: string, detailPath?: string, subtitleLangs?: string): { isFrench: boolean; language?: string } {
+  // PRIMAIRE : champ corner upstream (fiable à 100%)
+  if (corner) {
+    const c = String(corner).trim();
+    if (/vostfr/i.test(c)) return { isFrench: true, language: 'VOSTFR' };
+    if (/fran[cç]ais|\bvf\b/i.test(c)) return { isFrench: true, language: 'VF' };
+    return { isFrench: false };
+  }
 
-// Détecte si un contenu est en version française (VF/VOSTFR) à partir de son
-// titre, de son slug ou de ses genres. Sert à remonter la VF en priorité.
-const FRENCH_RE = /version\s*fran[cç]ais|fran[cç]ais|\bvf\b|\bvostfr\b|\bfrench\b|-vf-|-vf$/i;
-
-export function isFrenchContent(item: {
-  title?: string;
-  detailPath?: string;
-  genres?: string[];
-  badge?: string;
-}): boolean {
-  const haystack = [
-    item.title || '',
-    item.detailPath || '',
-    item.badge || '',
-    ...(item.genres || []),
-  ].join(' ');
-  return FRENCH_RE.test(haystack);
+  // FALLBACK : l'upstream n'a pas fourni de corner → on vérifie le titre et le slug
+  // pour des marqueurs explicites de langue. Ex: "Naruto [Version française]",
+  // "Godzilla [VF]", detailPath contenant "-version-francaise-".
+  // Ne pas utiliser de heuristiques larges (le titre "Kiss the French Girl"
+  // n'est pas VF), cibler uniquement les motifs entre crochets/ parenthèses.
+  const haystack = [title || '', detailPath || '', subtitleLangs || ''].join(' ');
+  if (/vostfr/i.test(haystack)) return { isFrench: true, language: 'VOSTFR' };
+  if (/\[version\s*fran[cç]ais\]|\(version\s*fran[cç]ais\)|-version-francaise-|\bvf\b|\[vf\]|\(vf\)|\[french\]|\(french\)|-vf-|-vf$/i.test(haystack)) {
+    return { isFrench: true, language: 'VF' };
+  }
+  return { isFrench: false };
 }
 
-// Tri stable qui remonte les versions françaises en tête, sans retirer le reste.
-export function prioritizeFrench<T extends Record<string, any>>(items: T[]): T[] {
-  return items
-    .map((item, index) => ({ item, index, fr: isFrenchContent(item) }))
-    .sort((a, b) => (a.fr === b.fr ? a.index - b.index : a.fr ? -1 : 1))
-    .map((x) => x.item);
-}
-
-// "En français" / "VF" → "VF" ; "VOSTFR" → "VOSTFR" ; sinon null.
-function languageLabel(corner: string, isFrench: boolean): string | undefined {
-  if (/vostfr/i.test(corner)) return 'VOSTFR';
-  if (isFrench || /fran[cç]ais/i.test(corner)) return 'VF';
-  return undefined;
-}
-
-function mapSubject(sub: any, fallbackDetailPath?: string): any | null {
+function mapSubject(sub: any, sectionTitle?: string): any | null {
   if (!sub) return null;
   const subjectId = sub.subjectId;
   if (!subjectId) return null;
   const corner = sub.corner ? String(sub.corner) : '';
+  const detailPath = sub.detailPath || '';
+  const title = sub.title || 'Unknown';
+  const subtitleLangs = sub.subtitles ? String(sub.subtitles) : undefined;
+  const lang = getCornerLanguage(corner, title, detailPath, subtitleLangs);
   const item: any = {
     subjectId: String(subjectId),
-    detailPath: sub.detailPath || fallbackDetailPath || '',
-    title: sub.title || 'Unknown',
+    detailPath,
+    title,
     posterUrl: sub.cover?.url || sub.poster?.url || '',
     type: sub.subjectType === 2 ? 'series' : 'movie',
     year: sub.releaseDate?.substring(0, 4),
     rating: sub.imdbRatingValue || undefined,
     genres: sub.genre ? String(sub.genre).split(',').map((g: string) => g.trim()) : undefined,
-    // Langues de sous-titres disponibles (chaîne CSV côté upstream)
-    subtitleLangs: sub.subtitles ? String(sub.subtitles) : undefined,
-    // Métadonnées enrichies : permettent un écran détail complet même quand
-    // l'API /detail renvoie 404 (titres récents), via le repli côté app.
+    subtitleLangs,
     plot: sub.description || sub.introduction || undefined,
     duration: sub.duration ? `${Math.floor(Number(sub.duration) / 60)}m` : undefined,
     country: sub.countryName || undefined,
   };
-  item.isFrench = isFrenchContent({ ...item, badge: corner });
-  item.language = languageLabel(corner, item.isFrench);
-  // On garde le "corner" comme badge seulement s'il ne sert pas à indiquer la langue
-  item.badge = corner && !/fran[cç]ais|vostfr/i.test(corner) ? corner : undefined;
+  item.isFrench = lang.isFrench;
+  item.language = lang.language;
+  item.badge = corner || undefined;
   return item;
+}
+
+function prioritizeFrench<T extends Record<string, any>>(items: T[]): T[] {
+  return items
+    .map((item, index) => ({ item, index, fr: item.isFrench === true }))
+    .sort((a, b) => (a.fr === b.fr ? a.index - b.index : a.fr ? -1 : 1))
+    .map((x) => x.item);
 }
 
 export class MovieBoxH5Scraper implements Scraper {
   config: ScraperConfig = {
     name: 'moviebox-h5api',
-    version: '2.0.0',
+    version: '2.1.0',
     baseUrl: API_H5_URL,
     priority: 0,
   };
@@ -133,8 +113,9 @@ export class MovieBoxH5Scraper implements Scraper {
   private bearerToken: string | null = null;
   private lastTokenFetch = 0;
   private readonly TOKEN_TTL = 25 * 60 * 1000;
-  // Cache subjectId -> detailPath pour résoudre le slug des streams
   private slugCache = new Map<string, string>();
+  // Cache les infos VF du home pour enrichir les items du filtre (qui n'ont pas de corner)
+  private homeFrenchCache = new Map<string, { isFrench: boolean; language?: string; badge?: string }>();
 
   private rememberSlug(subjectId: string, detailPath?: string): void {
     if (subjectId && detailPath) {
@@ -194,9 +175,7 @@ export class MovieBoxH5Scraper implements Scraper {
     }
   }
 
-  // GET/POST authentifié avec retry sur 401/403 + fallback vers les miroirs
   private async authedRequest(url: string, opts: { method?: string; body?: string } = {}): Promise<any> {
-    // Extraire le chemin de l'URL (enlève le protocole + hôte)
     const path = url.replace(/^https?:\/\/[^\/]+/, '');
     const hosts = [...new Set([API_H5_URL, ...API_H5_MIRRORS])];
 
@@ -246,7 +225,6 @@ export class MovieBoxH5Scraper implements Scraper {
           .map((item: any) => {
             const mapped = mapSubject(item.subject, item.detailPath);
             if (!mapped) return null;
-            // L'image du banner est en paysage, prioritaire sur le poster
             if (item.image?.url) mapped.coverUrl = item.image.url;
             if (item.title) mapped.title = item.title;
             return mapped;
@@ -256,15 +234,33 @@ export class MovieBoxH5Scraper implements Scraper {
           sections.push({ id: 'banner', title: 'Featured', type: 'banner', items });
         }
       } else if (['SUBJECTS_MOVIE', 'SUBJECTS_TV', 'SUBJECTS_ANIMATION'].includes(opType)) {
-        const items = prioritizeFrench((op.subjects || []).map((sub: any) => mapSubject(sub)).filter(Boolean));
+        const items = (op.subjects || []).map((sub: any) => mapSubject(sub)).filter(Boolean);
         if (items.length > 0) {
           sections.push({ id: op.opId || opType, title, type: 'row', items });
         }
+      } else {
+        // SPORT_LIVE, FILTER, CUSTOM — pass-through natif
+        sections.push({
+          id: op.opId || opType,
+          title,
+          type: opType === 'SPORT_LIVE' ? 'sport' : opType === 'FILTER' ? 'filter' : 'custom',
+          nativeType: opType,
+          items: [],
+        });
       }
     }
 
     for (const section of sections) {
-      for (const item of section.items) this.rememberSlug(item.subjectId, item.detailPath);
+      for (const item of section.items) {
+        this.rememberSlug(item.subjectId, item.detailPath);
+        if (item.isFrench || item.language || item.badge) {
+          this.homeFrenchCache.set(item.subjectId, {
+            isFrench: item.isFrench,
+            language: item.language,
+            badge: item.badge,
+          });
+        }
+      }
     }
 
     return { sections, tabs: CATEGORY_TABS };
@@ -278,7 +274,17 @@ export class MovieBoxH5Scraper implements Scraper {
 
     const items = prioritizeFrench(
       raw
-        .map((item: any) => mapSubject(item.subject || item, item.detailPath))
+        .map((item: any) => {
+          const mapped = mapSubject(item.subject || item, item.detailPath);
+          if (!mapped) return null;
+          const cached = this.homeFrenchCache.get(mapped.subjectId);
+          if (cached && !mapped.isFrench) {
+            mapped.isFrench = cached.isFrench;
+            mapped.language = cached.language;
+            mapped.badge = cached.badge;
+          }
+          return mapped;
+        })
         .filter(Boolean)
     );
 
@@ -337,7 +343,7 @@ export class MovieBoxH5Scraper implements Scraper {
       .filter(Boolean);
 
     const corner = sub.corner ? String(sub.corner) : '';
-    const isFrench = isFrenchContent({ title: sub.title, detailPath, badge: corner });
+    const lang = getCornerLanguage(corner);
 
     return {
       subjectId: String(sub.subjectId || subjectId),
@@ -356,8 +362,8 @@ export class MovieBoxH5Scraper implements Scraper {
       dubs,
       seasons: seasons.length > 0 ? seasons : undefined,
       freeEpisodes: sub.freeNum || data.watchTimeLimit?.freeNum || 0,
-      language: languageLabel(corner, isFrench),
-      isFrench,
+      language: lang.language,
+      isFrench: lang.isFrench,
       subtitleLangs: sub.subtitles ? String(sub.subtitles) : undefined,
     };
   }
@@ -397,7 +403,6 @@ export class MovieBoxH5Scraper implements Scraper {
     const se = season ?? 1;
     const ep = episode ?? 1;
 
-    // Le slug detailPath est OBLIGATOIRE : sans lui l'upstream renvoie streams:[]
     const slug = await this.resolveSlug(subjectId, detailPath);
 
     const domJson = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5PlayDomain}`);
@@ -405,8 +410,6 @@ export class MovieBoxH5Scraper implements Scraper {
 
     let playData = await this.fetchPlay(domain, subjectId, slug, se, ep);
 
-    // Convention upstream : les films utilisent se=0&ep=0. Si un client demande
-    // S1E1 (défaut) et n'obtient rien, on retente en mode film.
     if (!this.hasAnyStream(playData) && se === 1 && ep === 1) {
       playData = await this.fetchPlay(domain, subjectId, slug, 0, 0);
     }
@@ -459,48 +462,39 @@ export class MovieBoxH5Scraper implements Scraper {
     }
   }
 
-  // Le endpoint /subject/trending renvoie un catalogue GLOBAL (anglophone) même
-  // depuis la région FR. Pour un Explorer francophone, on agrège plutôt les
-  // sections du home (riche en VF) et on pagine côté serveur.
-  private homeItemsCache: { at: number; movies: any[]; series: any[]; all: any[] } | null = null;
-  private readonly HOME_ITEMS_TTL = 5 * 60 * 1000;
-
-  private async getHomeItems(): Promise<{ movies: any[]; series: any[]; all: any[] }> {
-    if (this.homeItemsCache && Date.now() - this.homeItemsCache.at < this.HOME_ITEMS_TTL) {
-      return this.homeItemsCache;
-    }
-    const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Home}?host=moviebox.ph`);
-    const ops = json?.data?.operatingList || [];
-    const seen = new Set<string>();
-    const all: any[] = [];
-    for (const op of ops) {
-      if (!['SUBJECTS_MOVIE', 'SUBJECTS_TV', 'SUBJECTS_ANIMATION'].includes(op.type)) continue;
-      for (const sub of op.subjects || []) {
-        const item = mapSubject(sub);
-        if (!item || seen.has(item.subjectId)) continue;
-        seen.add(item.subjectId);
-        all.push(item);
-        this.rememberSlug(item.subjectId, item.detailPath);
-      }
-    }
-    const cache = {
-      at: Date.now(),
-      movies: prioritizeFrench(all.filter((i) => i.type === 'movie')),
-      series: prioritizeFrench(all.filter((i) => i.type === 'series')),
-      all: prioritizeFrench(all),
-    };
-    this.homeItemsCache = cache;
-    return cache;
-  }
-
   async category(tabId: string, page: number = 1): Promise<{ items: any[]; page: number; hasMore: boolean }> {
-    const home = await this.getHomeItems();
-    const list = tabId === 'movies' ? home.movies : tabId === 'series' ? home.series : home.all;
-
+    const upstreamTabId = H5_FILTER_TAB_IDS[tabId] ?? (isNaN(Number(tabId)) ? 0 : Number(tabId));
     const perPage = 24;
-    const start = (page - 1) * perPage;
-    const slice = list.slice(start, start + perPage);
 
-    return { items: slice, page, hasMore: start + perPage < list.length };
+    const body = JSON.stringify({
+      tabId: upstreamTabId,
+      filter: { sort: 'RECOMMEND', genre: 'ALL', country: 'ALL', year: 'ALL', language: 'ALL' },
+      page,
+      perPage,
+    });
+
+    const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Filter}`, { method: 'POST', body });
+    const inner = json?.data || {};
+    const rawItems = inner.items || inner.subjects || [];
+
+    const items = rawItems.map((sub: any) => {
+      const item = mapSubject(sub);
+      if (!item) return null;
+      // Enrichir avec le cache VF du home (le filtre ne renvoie pas le champ corner)
+      const cached = this.homeFrenchCache.get(item.subjectId);
+      if (cached && !item.isFrench) {
+        item.isFrench = cached.isFrench;
+        item.language = cached.language;
+        item.badge = cached.badge;
+      }
+      return item;
+    }).filter(Boolean);
+    for (const item of items) this.rememberSlug(item.subjectId, item.detailPath);
+
+    const pager = inner.pager || {};
+    const total = pager.totalCount || inner.total || items.length;
+    const hasMore = page * perPage < total;
+
+    return { items, page, hasMore };
   }
 }

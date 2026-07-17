@@ -66,3 +66,13 @@ export const TAB_IDS: Record<string, number> = {
   anime: 3,
   ranking: 4,
 };
+
+// IDs des onglets pour l'endpoint H5 /subject/filter (POST).
+// Utilisé par la catégorie Explorer. Ces IDs sont différents des TAB_IDS
+// de l'API mobile.
+export const H5_FILTER_TAB_IDS: Record<string, number> = {
+  trending: 0,
+  movies: 2,
+  series: 5,
+  animation: 8,
+};
