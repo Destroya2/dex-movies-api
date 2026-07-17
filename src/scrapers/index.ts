@@ -1,6 +1,8 @@
 import { Scraper, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult } from './base';
 import { MovieBoxMobileScraper } from './moviebox/index';
 import { MovieBoxH5Scraper } from './fallback/h5api';
+import { FlixHQScraper } from './flixhq';
+import { VidLinkScraper } from './vidlink';
 
 type ScraperMethod = 'home' | 'search' | 'suggest' | 'detail' | 'stream' | 'category';
 
@@ -23,6 +25,11 @@ export class ScraperEngine {
   constructor() {
     // H5 en premier : le scraper HMAC (api3.aoneroom.com) est bloqué depuis les IP Vercel
     this.register(new MovieBoxH5Scraper());
+    // VidLink : fournit des streams quand on a un TMDB ID
+    this.register(new VidLinkScraper());
+    // FlixHQ (Consumet) : découverte de contenu. Bloqué par Cloudflare depuis Vercel
+    // mais fonctionne en local / IP résidentielle
+    this.register(new FlixHQScraper());
     this.register(new MovieBoxMobileScraper());
   }
 
