@@ -1,6 +1,5 @@
-import { buildSignedHeaders } from '../../utils/headers';
-import { request } from '../../utils/http';
-import { API_BASE_URL, ENDPOINTS } from '../../config/constants';
+import { ENDPOINTS } from '../../config/constants';
+import { mobileGet } from './http';
 import { HomeSection, ContentItem, CategoryContent } from './types';
 
 const HOME_TABS: Record<string, string> = {
@@ -24,15 +23,9 @@ export async function fetchHomepage(): Promise<HomeSection[]> {
 
   for (const [tabId, title] of Object.entries(HOME_TABS).slice(0, 6)) {
     try {
-      const url = `${API_BASE_URL}${ENDPOINTS.rankingList}?tabId=0&categoryType=${tabId}&page=1&perPage=15`;
-      const headers = buildSignedHeaders({ url, profile: 'home' });
-
-      const response = await request(url, { headers });
-      if (response.status !== 200) continue;
-
-      const json = await response.json();
+      const path = `${ENDPOINTS.rankingList}?tabId=0&categoryType=${tabId}&page=1&perPage=15`;
+      const json = await mobileGet(path, 'home');
       const items = parseTabResponse(json, tabId);
-
       if (items.length > 0) {
         sections.push({ id: tabId, title, type: 'row', items });
       }
@@ -52,15 +45,8 @@ export async function fetchCategoryContent(
   tabId: string,
   page: number = 1
 ): Promise<CategoryContent> {
-  const url = `${API_BASE_URL}${ENDPOINTS.rankingList}?tabId=0&categoryType=${tabId}&page=${page}&perPage=20`;
-  const headers = buildSignedHeaders({ url, profile: 'home' });
-
-  const response = await request(url, { headers });
-  if (response.status !== 200) {
-    throw new Error(`Category fetch failed: ${response.status}`);
-  }
-
-  const json = await response.json();
+  const path = `${ENDPOINTS.rankingList}?tabId=0&categoryType=${tabId}&page=${page}&perPage=20`;
+  const json = await mobileGet(path, 'home');
   const rawItems = json?.data?.items || json?.data?.subjects || [];
   const items = rawItems.map(mapToContentItem).filter(Boolean) as ContentItem[];
 

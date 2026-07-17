@@ -9,8 +9,7 @@ interface HeaderOptions {
   body?: string | null;
   useAltKey?: boolean;
   token?: string;
-  // Client info profile
-  profile?: 'home' | 'detail' | 'stream';
+  profile?: 'home' | 'detail' | 'stream' | 'search';
   extraHeaders?: Record<string, string>;
 }
 
@@ -59,7 +58,7 @@ export function buildSignedHeaders(opts: HeaderOptions): Record<string, string> 
   return headers;
 }
 
-function getClientInfo(profile: 'home' | 'detail' | 'stream'): string {
+function getClientInfo(profile: string): string {
   switch (profile) {
     case 'home':
       return buildClientInfo({
@@ -88,7 +87,7 @@ function getClientInfo(profile: 'home' | 'detail' | 'stream'): string {
   }
 }
 
-function getUserAgent(profile: 'home' | 'detail' | 'stream'): string {
+function getUserAgent(profile: string): string {
   switch (profile) {
     case 'home':
       return 'com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; sdk_gphone64_x86_64; Build/BP22.250325.006; Cronet/133.0.6876.3)';

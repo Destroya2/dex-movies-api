@@ -20,6 +20,13 @@ function randomBrandModel(): { brand: string; model: string } {
   return { brand, model };
 }
 
+function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 interface ClientInfoParams {
   packageName?: string;
   versionName?: string;
@@ -41,9 +48,9 @@ function buildClientInfo(params?: ClientInfoParams): string {
     os_version: params?.osVersion || '13',
     device_id: deviceId,
     install_store: 'ps',
-    gaid: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
-    brand: model,
-    model: brand,
+    gaid: generateUUID(),
+    brand,
+    model,
     system_language: 'en',
     net: 'NETWORK_WIFI',
     region: params?.region || 'US',
@@ -54,4 +61,4 @@ function buildClientInfo(params?: ClientInfoParams): string {
   return JSON.stringify(info);
 }
 
-export { generateDeviceId, randomBrandModel, buildClientInfo };
+export { generateDeviceId, randomBrandModel, buildClientInfo, generateUUID };

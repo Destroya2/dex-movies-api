@@ -3,15 +3,15 @@ import { fetchHomepage, fetchCategoryTabs, fetchCategoryContent } from './home';
 import { search, suggest as movieboxSuggest } from './search';
 import { fetchDetail } from './detail';
 import { fetchStream } from './stream';
-import { API_BASE_URL } from '../../config/constants';
+import { API_MOBILE_HOSTS } from '../../config/constants';
 
 export class MovieBoxMobileScraper implements Scraper {
   config: ScraperConfig = {
     name: 'moviebox-hmac',
-    version: '1.0.0',
-    baseUrl: API_BASE_URL,
+    version: '2.0.0',
+    baseUrl: API_MOBILE_HOSTS[0],
     // Secondaire : api3.aoneroom.com bloque les IP datacenter (Vercel)
-    priority: 1,
+    priority: 3,
   };
 
   async isAvailable(): Promise<boolean> {

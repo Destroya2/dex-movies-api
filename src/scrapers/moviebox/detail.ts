@@ -1,18 +1,10 @@
-import { buildSignedHeaders } from '../../utils/headers';
-import { request } from '../../utils/http';
-import { API_BASE_URL, ENDPOINTS } from '../../config/constants';
+import { ENDPOINTS } from '../../config/constants';
+import { mobileGet } from './http';
 import { ContentDetail, SeasonInfo, DubInfo, CastMember } from './types';
 
 export async function fetchDetail(subjectId: string): Promise<ContentDetail> {
-  const url = `${API_BASE_URL}${ENDPOINTS.detail}?subjectId=${subjectId}`;
-  const headers = buildSignedHeaders({ url, profile: 'detail' });
-
-  const response = await request(url, { headers });
-  if (response.status !== 200) {
-    throw new Error(`Detail fetch failed: ${response.status}`);
-  }
-
-  const json = await response.json();
+  const path = `${ENDPOINTS.detail}?subjectId=${subjectId}`;
+  const json = await mobileGet(path, 'detail');
   const data = json?.data;
   const subject = data?.subject || data;
 
@@ -48,19 +40,17 @@ export async function fetchDetail(subjectId: string): Promise<ContentDetail> {
 }
 
 export async function fetchSeasons(subjectId: string): Promise<SeasonInfo[]> {
-  const url = `${API_BASE_URL}${ENDPOINTS.seasonInfo}?subjectId=${subjectId}`;
-  const headers = buildSignedHeaders({ url });
-
-  const response = await fetch(url, { headers });
-  if (!response.ok) return [];
-
-  const json = await response.json() as any;
-  const seasons = json?.data?.seasons || [];
-
-  return seasons.map((s: any) => ({
-    season: s.se || s.season || 1,
-    maxEpisodes: s.maxEp || s.episodeCount || 0,
-  }));
+  try {
+    const path = `${ENDPOINTS.seasonInfo}?subjectId=${subjectId}`;
+    const json = await mobileGet(path, 'detail');
+    const seasons = json?.data?.seasons || [];
+    return seasons.map((s: any) => ({
+      season: s.se || s.season || 1,
+      maxEpisodes: s.maxEp || s.episodeCount || 0,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 function extractSeasons(subject: any, data: any): SeasonInfo[] {

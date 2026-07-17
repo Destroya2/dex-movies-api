@@ -8,6 +8,18 @@ export const API_H5_MIRRORS: string[] = [
   'https://moviebox.ph',
 ];
 
+// Pool d'hôtes de l'API mobile Android (v3). L'app essaie chaque hôte
+// dans l'ordre jusqu'à obtenir une réponse. api3 = défaut, api4-6 + inmoviebox = fallback.
+export const API_MOBILE_HOSTS: string[] = [
+  'https://api3.aoneroom.com',
+  'https://api4.aoneroom.com',
+  'https://api5.aoneroom.com',
+  'https://api6.aoneroom.com',
+  'https://api.inmoviebox.com',
+  'https://api4sg.aoneroom.com',
+  'https://api6sg.aoneroom.com',
+];
+
 export const ENDPOINTS = {
   rankingList: '/wefeed-mobile-bff/tab/ranking-list',
   subjectList: '/wefeed-mobile-bff/subject-api/list',
@@ -15,6 +27,8 @@ export const ENDPOINTS = {
   detail: '/wefeed-mobile-bff/subject-api/get',
   seasonInfo: '/wefeed-mobile-bff/subject-api/season-info',
   playInfo: '/wefeed-mobile-bff/subject-api/play-info',
+  resource: '/wefeed-mobile-bff/subject-api/resource',
+  tabOperating: '/wefeed-mobile-bff/tab-operating',
   streamCaptions: '/wefeed-mobile-bff/subject-api/get-stream-captions',
   extCaptions: '/wefeed-mobile-bff/subject-api/get-ext-captions',
   h5Home: '/wefeed-h5api-bff/home',
@@ -40,5 +54,15 @@ export const SUBJECT_TYPE = {
   ALL: 0,
   MOVIE: 1,
   TV_SERIES: 2,
+  EDUCATION: 5,
   MUSIC: 6,
+  ANIME: 7,
 } as const;
+
+export const TAB_IDS: Record<string, number> = {
+  home: 0,
+  movies: 1,
+  series: 2,
+  anime: 3,
+  ranking: 4,
+};
