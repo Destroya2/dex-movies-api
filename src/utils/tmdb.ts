@@ -1,0 +1,74 @@
+import { request } from './http';
+import { logger } from '../middleware/logger';
+
+const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
+const TMDB_BASE = 'https://api.themoviedb.org/3';
+const TMDB_IMG = 'https://image.tmdb.org/t/p';
+
+export interface TmdbResult {
+  title: string;
+  overview: string;
+  posterPath?: string;
+  backdropPath?: string;
+  releaseDate?: string;
+  voteAverage?: number;
+  genres?: string[];
+  cast?: string[];
+  runtime?: number;
+  imdbId?: string;
+}
+
+function searchQuery(title: string): string {
+  return title
+    .replace(/\[.*?\]/g, '')
+    .replace(/\(.*?\)/g, '')
+    .replace(/[VF]|VOSTFR|Version\s*[Ff]rançaise/g, '')
+    .trim();
+}
+
+export async function enrichWithTmdb(
+  title: string,
+  type: 'movie' | 'series' = 'movie',
+  year?: string
+): Promise<Partial<TmdbResult> | null> {
+  if (!TMDB_API_KEY) return null;
+
+  try {
+    const query = encodeURIComponent(searchQuery(title));
+    const searchUrl = `${TMDB_BASE}/search/${type === 'series' ? 'tv' : 'movie'}?api_key=${TMDB_API_KEY}&query=${query}&language=fr-FR&page=1${year ? `&year=${year}` : ''}`;
+
+    const resp = await request(searchUrl);
+    if (resp.status !== 200) return null;
+
+    const data = await resp.json();
+    const results = data.results || [];
+    if (results.length === 0) return null;
+
+    const first = results[0];
+    const id = first.id;
+
+    const detailUrl = `${TMDB_BASE}/${type === 'series' ? 'tv' : 'movie'}/${id}?api_key=${TMDB_API_KEY}&language=fr-FR&append_to_response=credits,external_ids`;
+    const detailResp = await request(detailUrl);
+    if (detailResp.status !== 200) return null;
+
+    const detail = await detailResp.json();
+
+    const cast = (detail.credits?.cast || []).slice(0, 10).map((c: any) => c.name).filter(Boolean);
+
+    return {
+      title: detail.title || detail.name || first.title,
+      overview: detail.overview || first.overview || '',
+      posterPath: first.poster_path ? `${TMDB_IMG}/w500${first.poster_path}` : undefined,
+      backdropPath: detail.backdrop_path ? `${TMDB_IMG}/original${detail.backdrop_path}` : undefined,
+      releaseDate: detail.release_date || detail.first_air_date || first.release_date,
+      voteAverage: detail.vote_average || first.vote_average,
+      genres: (detail.genres || []).map((g: any) => g.name),
+      cast: cast.length > 0 ? cast : undefined,
+      runtime: detail.runtime || detail.episode_run_time?.[0],
+      imdbId: detail.external_ids?.imdb_id,
+    };
+  } catch (err) {
+    logger.warn(`TMDB enrichment failed for "${title}": ${(err as Error).message}`);
+    return null;
+  }
+}

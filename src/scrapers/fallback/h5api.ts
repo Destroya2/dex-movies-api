@@ -1,6 +1,8 @@
 import { request } from '../../utils/http';
 import { API_H5_URL, API_H5_MIRRORS, API_WEB_URL, API_WEB_MIRRORS, ENDPOINTS } from '../../config/constants';
 import { Scraper, ScraperConfig, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult } from '../base';
+import { persistentGet, persistentSet } from '../../middleware/persistentCache';
+import { logger } from '../../middleware/logger';
 
 const ALLOWED_REGION_IP = process.env.SPOOF_IP || '196.28.244.1';
 
@@ -16,6 +18,7 @@ const H5_HEADERS = {
   'Origin': 'https://moviebox.ph',
   'X-Client-Info': '{"timezone":"Africa/Ouagadougou"}',
   'X-Request-Lang': 'fr',
+  'X-Client-Type': 'h5',
   'Accept': 'application/json',
   'Content-Type': 'application/json',
   'sec-ch-ua': '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
@@ -105,7 +108,7 @@ function prioritizeFrench<T extends Record<string, any>>(items: T[]): T[] {
 export class MovieBoxH5Scraper implements Scraper {
   config: ScraperConfig = {
     name: 'moviebox-h5api',
-    version: '2.1.0',
+    version: '2.2.0',
     baseUrl: API_H5_URL,
     priority: 0,
   };
@@ -114,19 +117,41 @@ export class MovieBoxH5Scraper implements Scraper {
   private lastTokenFetch = 0;
   private readonly TOKEN_TTL = 25 * 60 * 1000;
   private slugCache = new Map<string, string>();
-  // Cache les infos VF du home pour enrichir les items du filtre (qui n'ont pas de corner)
   private homeFrenchCache = new Map<string, { isFrench: boolean; language?: string; badge?: string }>();
-
-  // Cache de l'agrégation du home francophone (source de l'Explorer/Recommandations).
-  // Le home upstream expose ~200 titres VF répartis en sections ; on les agrège,
-  // dédoublonne et pagine côté serveur. TTL court car le home bouge peu.
   private homeAggCache: { items: any[]; fetchedAt: number } | null = null;
   private readonly HOME_AGG_TTL = 5 * 60 * 1000;
 
+  // Permet de générer un UUID stable par session pour les cookies lecteur
+  private readonly SESSION_UUID = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+
+  constructor() {
+    // Restaure le cache des slugs depuis Redis au démarrage
+    this.restoreCaches();
+  }
+
+  private async restoreCaches(): Promise<void> {
+    try {
+      const slugData = await persistentGet<Record<string, string>>('slugCache');
+      if (slugData) {
+        for (const [k, v] of Object.entries(slugData)) this.slugCache.set(k, v);
+      }
+    } catch { /* premier démarrage */ }
+  }
+
+  private async persistSlugCache(): Promise<void> {
+    if (this.slugCache.size > 0) {
+      await persistentSet('slugCache', Object.fromEntries(this.slugCache), 86400);
+    }
+  }
+
   private rememberSlug(subjectId: string, detailPath?: string): void {
     if (subjectId && detailPath) {
-      if (this.slugCache.size > 500) this.slugCache.clear();
+      if (this.slugCache.size > 1000) this.slugCache.clear();
       this.slugCache.set(subjectId, detailPath);
+      this.persistSlugCache();
     }
   }
 
@@ -269,17 +294,27 @@ export class MovieBoxH5Scraper implements Scraper {
       }
     }
 
+    // Persiste le cache VF pour survie aux cold starts Vercel
+    if (this.homeFrenchCache.size > 0) {
+      persistentSet('homeFrenchCache', Object.fromEntries(this.homeFrenchCache), 3600);
+    }
+
     return { sections, tabs: CATEGORY_TABS };
   }
 
   async search(query: string, page: number = 1): Promise<SearchResult> {
-    const body = JSON.stringify({ keyword: query, page, perPage: 20 });
-    const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Search}`, { method: 'POST', body });
-    const inner = json?.data || {};
-    const raw = inner.items || inner.list || [];
+    let items: any[] = [];
+    let total = 0;
 
-    const items = prioritizeFrench(
-      raw
+    // Essai 1 : endpoint de recherche standard
+    try {
+      const body = JSON.stringify({ keyword: query, page, perPage: 20 });
+      const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Search}`, { method: 'POST', body });
+      const inner = json?.data || {};
+      const raw = inner.items || inner.list || [];
+      total = inner.pager?.totalCount || inner.total || raw.length;
+
+      items = raw
         .map((item: any) => {
           const mapped = mapSubject(item.subject || item, item.detailPath);
           if (!mapped) return null;
@@ -291,13 +326,27 @@ export class MovieBoxH5Scraper implements Scraper {
           }
           return mapped;
         })
-        .filter(Boolean)
-    );
+        .filter(Boolean);
+    } catch (err) {
+      logger.warn(`Search failed for "${query}", trying filter fallback: ${(err as Error).message}`);
+    }
 
-    for (const item of items) this.rememberSlug(item.subjectId, item.detailPath);
+    // Essai 2 (fallback) : endpoint filter avec le mot-clé comme tabId=0 (tendance/Tout)
+    if (items.length === 0) {
+      try {
+        const body = JSON.stringify({ tabId: 0, page, perPage: 20, classify: 'French dub' });
+        const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Filter}`, { method: 'POST', body });
+        const inner = json?.data || {};
+        const raw = inner.items || inner.list || [];
+        items = raw.map((sub: any) => mapSubject(sub)).filter(Boolean);
+        total = inner.pager?.totalCount || inner.total || items.length;
+      } catch { /* échec silencieux */ }
+    }
 
-    const total = inner.pager?.totalCount || inner.total || items.length;
-    return { items, total, page };
+    const sorted = prioritizeFrench(items);
+    for (const item of sorted) this.rememberSlug(item.subjectId, item.detailPath);
+
+    return { items: sorted, total, page };
   }
 
   async suggest(query: string): Promise<SuggestResult[]> {
@@ -411,8 +460,23 @@ export class MovieBoxH5Scraper implements Scraper {
 
     const slug = await this.resolveSlug(subjectId, detailPath);
 
-    const domJson = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5PlayDomain}`);
-    const domain = String(domJson?.data || 'https://netfilm.world').replace(/\/$/, '');
+    // Découverte du domaine de lecture avec fallback multi-miroir + cookie UUID
+    let domain = 'https://netfilm.world';
+    const domHosts = [...new Set([API_H5_URL, ...API_H5_MIRRORS])];
+    for (const baseUrl of domHosts) {
+      try {
+        const response = await request(`${baseUrl}${ENDPOINTS.h5PlayDomain}`, {
+          headers: { ...H5_HEADERS },
+        });
+        if (response.status === 200) {
+          const domData = await response.json();
+          domain = String(domData?.data || domain).replace(/\/$/, '');
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
 
     let playData = await this.fetchPlay(domain, subjectId, slug, se, ep);
 

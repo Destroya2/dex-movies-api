@@ -12,9 +12,14 @@ export const API_WEB_MIRRORS: string[] = [
 
 // Hôtes miroirs du backend v2 (tous servent le même API h5api-bff).
 // Testés depuis Vercel : h5-api.aoneroom.com et moviebox.ph répondent 200.
+// Ajout des nouveaux miroirs découverts via DonMcKendiez/Moviebox-API-2 et Simatwa/moviebox-api
 export const API_H5_MIRRORS: string[] = [
   'https://h5-api.aoneroom.com',
   'https://moviebox.ph',
+  'https://moviebox.pk',
+  'https://moviebox.id',
+  'https://movieboxapp.in',
+  'https://v.moviebox.ph',
 ];
 
 // Pool d'hôtes de l'API mobile Android (v3). L'app essaie chaque hôte
@@ -53,6 +58,9 @@ export const ENDPOINTS = {
   // juste le géo-spoof. Découverts via le repo script-hunter-moviebox-api.
   webDetailRec: '/wefeed-h5-bff/web/subject/detail-rec',
   webDownload: '/wefeed-h5-bff/web/subject/download',
+  webTrending: '/wefeed-h5-bff/web/subject/trending',
+  // Nouveaux endpoints découverts via don-moviebox-api2
+  h5AppPackages: '/wefeed-h5-bff/app/get-latest-app-pkgs', // Cookie acquisition
 };
 
 export const CDN_DOMAINS = [
@@ -61,6 +69,8 @@ export const CDN_DOMAINS = [
   'bcdnw.hakunaymatata.com',
   'sacdn.hakunaymatata.com',
   'netfilm.world',
+  'pbcdnw.aoneroom.com',
+  'bcdn.hakunaymatata.com',
 ];
 
 export const SUBJECT_TYPE = {

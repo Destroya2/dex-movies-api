@@ -7,6 +7,8 @@ import { logger } from './middleware/logger';
 import { errorHandler } from './middleware/errorHandler';
 import { swaggerSpec } from './config/swagger';
 import { metricsMiddleware, metricsHandler } from './middleware/metrics';
+import { apiRateLimiter } from './middleware/rateLimit';
+import { caches } from './middleware/cache';
 import dexRouter from './routes/dex';
 import proxyRouter from './routes/proxy';
 
@@ -16,6 +18,7 @@ app.use(compression());
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 app.use(metricsMiddleware);
+app.use(apiRateLimiter);
 
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
   customCss: '.swagger-ui .topbar { display: none }',
@@ -23,7 +26,19 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
 }));
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime(), timestamp: Date.now() });
+  const cacheStats = Object.fromEntries(
+    Object.entries(caches).map(([name, cache]) => [
+      name,
+      { keys: cache.keys().length, hits: cache.getStats().hits, misses: cache.getStats().misses },
+    ])
+  );
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: Date.now(),
+    memory: process.memoryUsage(),
+    cache: cacheStats,
+  });
 });
 
 app.get('/metrics', metricsHandler);

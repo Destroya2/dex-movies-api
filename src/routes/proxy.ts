@@ -31,10 +31,12 @@ const router = Router();
 
 const ALLOWED_DOMAINS = new Set([
   ...CDN_DOMAINS,
-  'netfilm.world',
   'api3.aoneroom.com',
 ]);
 
+// Désactive la validation SSL pour les CDNs qui utilisent des certificats
+// auto-signés ou des SANs non standards (netfilm.world, hakunaymatata.com).
+// Risque accepté : le domaine est whitelisté statiquement en amont.
 const agent = new https.Agent({ rejectUnauthorized: false });
 
 function isAllowed(urlStr: string): boolean {
