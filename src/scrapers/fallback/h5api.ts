@@ -491,7 +491,14 @@ export class MovieBoxH5Scraper implements Scraper {
       id: s.id || undefined,
       url: s.url || '',
       format: s.format === 'HLS' ? 'HLS' : s.format === 'DASH' ? 'DASH' : 'MP4',
-      quality: parseInt(String(s.resolutions || '0').replace(/\D/g, '')) || 0,
+      // DASH/HLS adaptatif : `resolutions` peut lister plusieurs valeurs
+      // ("1080,720,480"). On prend le MAX (pas de concaténation en un nombre géant
+      // "1080720480" qui faisait rejeter la source par le lecteur → repli sur MP4).
+      quality: (() => {
+        const nums = String(s.resolutions || '').split(/[^0-9]+/).filter(Boolean)
+          .map(Number).filter((n) => n > 0 && n <= 4320);
+        return nums.length ? Math.max(...nums) : 0;
+      })(),
       size: s.size ? Number(s.size) : undefined,
       duration: s.duration ? Number(s.duration) : undefined,
       codec: s.codecName || 'h264',
