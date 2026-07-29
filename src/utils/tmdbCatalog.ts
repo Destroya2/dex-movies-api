@@ -144,6 +144,8 @@ export async function tmdbDetail(type: TmdbMediaType, id: number): Promise<any |
     const cast = (detail.credits?.cast || []).slice(0, 12).map((c: any) => c.name).filter(Boolean);
     return {
       ...base,
+      // Titre original (souvent anglais) : MovieBox indexe beaucoup de titres ainsi
+      originalTitle: detail.original_title || detail.original_name || undefined,
       duration: detail.runtime
         ? `${Math.floor(detail.runtime / 60)}h${String(detail.runtime % 60).padStart(2, '0')}`
         : (detail.episode_run_time?.[0] ? `${detail.episode_run_time[0]}m` : undefined),

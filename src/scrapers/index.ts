@@ -5,6 +5,7 @@ import { FlixHQScraper } from './flixhq';
 import { VidLinkScraper } from './vidlink';
 import { tmdbDetail, TmdbMediaType } from '../utils/tmdbCatalog';
 import { bestMatch } from '../utils/titleMatch';
+import { fallbackStream } from '../utils/streamFallback';
 import { logger } from '../middleware/logger';
 
 type ScraperMethod = 'home' | 'search' | 'suggest' | 'detail' | 'stream' | 'category';
@@ -100,13 +101,31 @@ export class ScraperEngine {
     try {
       const detail = await tmdbDetail((type as TmdbMediaType) || 'movie', id);
       if (detail?.title) {
-        const { data } = await this.search(detail.title, 1);
-        const match = bestMatch(detail.title, detail.year, data.items || []);
+        // Cherche MovieBox avec le titre FR ET le titre original (anglais souvent) :
+        // MovieBox indexe selon l'un ou l'autre. On agrège les candidats et on
+        // matche contre les deux titres pour maximiser la couverture.
+        const queries = [detail.title];
+        if (detail.originalTitle && detail.originalTitle !== detail.title) {
+          queries.push(detail.originalTitle);
+        }
+        const candidates: any[] = [];
+        const seen = new Set<string>();
+        for (const q of queries) {
+          try {
+            const { data } = await this.search(q, 1);
+            for (const it of data.items || []) {
+              if (!seen.has(it.subjectId)) { seen.add(it.subjectId); candidates.push(it); }
+            }
+          } catch {}
+        }
+        // Meilleur match sur le titre FR, puis sur le titre original
+        const match = bestMatch(detail.title, detail.year, candidates)
+          || (detail.originalTitle ? bestMatch(detail.originalTitle, detail.year, candidates) : null);
         if (match) {
           resolved = { subjectId: match.item.subjectId, detailPath: match.item.detailPath };
           logger.info(`Bridge TMDB ${subjectId} ("${detail.title}") → MovieBox ${match.item.subjectId} (score ${match.score.toFixed(2)})`);
         } else {
-          logger.warn(`Bridge TMDB ${subjectId} ("${detail.title}") : aucun match MovieBox`);
+          logger.warn(`Bridge TMDB ${subjectId} ("${detail.title}"/"${detail.originalTitle || ''}") : aucun match MovieBox (${candidates.length} candidats)`);
         }
       }
     } catch (e: any) {
@@ -142,9 +161,24 @@ export class ScraperEngine {
 
   async stream(subjectId: string, season?: number, episode?: number, detailPath?: string): Promise<{ data: StreamResult; source: string }> {
     if (this.isTmdbId(subjectId)) {
+      const [, tType, tId] = subjectId.split(':');
+      // 1) MovieBox via le pont (VF prioritaire)
       const r = await this.resolveTmdb(subjectId);
-      if (!r) return { data: { sources: [], dubs: [], subtitles: [], hasResource: false, freeEpisodes: 0 }, source: 'none' };
-      return this.execute('stream', (s) => s.stream(r.subjectId, season, episode, r.detailPath), `stream(${r.subjectId})`);
+      if (r) {
+        try {
+          const mb = await this.execute('stream', (s) => s.stream(r.subjectId, season, episode, r.detailPath), `stream(${r.subjectId})`);
+          if (mb.data.sources.length > 0) return mb;
+        } catch {}
+      }
+      // 2) Fallback externe par TMDB id (VO/VOSTFR) quand MovieBox n'a pas le titre
+      const fb = await fallbackStream(tId, (tType as 'movie' | 'tv') || 'movie', season, episode);
+      if (fb.sources.length > 0) {
+        return {
+          data: { sources: fb.sources, dubs: [], subtitles: fb.subtitles, hasResource: true, freeEpisodes: 0 },
+          source: 'fallback',
+        };
+      }
+      return { data: { sources: [], dubs: [], subtitles: [], hasResource: false, freeEpisodes: 0 }, source: 'none' };
     }
     return this.execute('stream', (s) => s.stream(subjectId, season, episode, detailPath), `stream(${subjectId})`);
   }
