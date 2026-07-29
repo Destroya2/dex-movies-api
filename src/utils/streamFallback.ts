@@ -85,29 +85,76 @@ async function wyzieSubs(tmdbId: string, season?: number, episode?: number): Pro
   }
 }
 
+// ─── Resolver Pi (navigateur headless, IP résidentielle) ─────────────────────
+// Service tournant sur le Raspberry Pi (voir pi-resolver/), exposé via Tailscale
+// Funnel. Capture le flux par interception réseau → débloque les titres que ni
+// MovieBox ni le HTTP simple ne donnent. Best-effort : si le Pi est hors-ligne,
+// on dégrade proprement.
+async function piResolver(
+  tmdbId: string,
+  type: 'movie' | 'tv',
+  season?: number,
+  episode?: number,
+  title?: string,
+  year?: string,
+): Promise<FallbackStream> {
+  const base = process.env.FALLBACK_RESOLVER_URL;
+  if (!base) return { sources: [], subtitles: [] };
+  const token = process.env.RESOLVER_TOKEN || '';
+  const qs = new URLSearchParams({ tmdb: tmdbId, type });
+  if (season) qs.set('season', String(season));
+  if (episode) qs.set('episode', String(episode));
+  if (title) qs.set('title', title);
+  if (year) qs.set('year', year);
+  if (token) qs.set('key', token);
+
+  try {
+    // Le resolver pilote un navigateur → laisser du temps (jusqu'à 50 s)
+    const resp = await request(`${base.replace(/\/$/, '')}/resolve?${qs.toString()}`, {
+      headers: { 'User-Agent': UA },
+      timeout: 55000,
+    });
+    if (resp.status !== 200) return { sources: [], subtitles: [] };
+    const json = JSON.parse(resp.body);
+    if (!json?.success || !json?.data?.sources?.length) return { sources: [], subtitles: [] };
+    logger.info(`Resolver Pi (${json.provider}) → ${json.data.sources.length} source(s) pour tmdb ${tmdbId}`);
+    return {
+      sources: json.data.sources.map((s: any) => ({
+        url: s.url, format: s.format || 'HLS', quality: s.quality || 1080,
+      })),
+      subtitles: (json.data.subtitles || []).map((c: any) => ({ url: c.url, language: c.language || 'Unknown' })),
+    };
+  } catch (e: any) {
+    logger.warn(`Resolver Pi injoignable (tmdb ${tmdbId}): ${e?.message || e}`);
+    return { sources: [], subtitles: [] };
+  }
+}
+
 /**
- * Tente les providers de secours dans l'ordre jusqu'à obtenir des sources.
- * Retourne { sources: [] } si tout échoue (bloqué / titre absent).
+ * Tente les providers de secours jusqu'à obtenir des sources :
+ * 1) le resolver Pi (navigateur, débloque le plus de titres) si configuré,
+ * 2) vixsrc en HTTP direct (best-effort, souvent bloqué depuis un datacenter).
+ * Retourne { sources: [] } si tout échoue.
  */
 export async function fallbackStream(
   tmdbId: string,
   type: 'movie' | 'tv',
   season?: number,
   episode?: number,
+  title?: string,
+  year?: string,
 ): Promise<FallbackStream> {
-  const providers: [string, () => Promise<FallbackStream>][] = [
-    ['vixsrc', () => vixsrc(tmdbId, type, season, episode)],
-  ];
-  for (const [name, fn] of providers) {
-    try {
-      const r = await fn();
-      if (r.sources.length > 0) {
-        logger.info(`Fallback ${name} → ${r.sources.length} source(s) pour tmdb ${tmdbId}`);
-        return r;
-      }
-    } catch (e: any) {
-      logger.warn(`Fallback ${name} échec (tmdb ${tmdbId}): ${e?.message || e}`);
+  const pi = await piResolver(tmdbId, type, season, episode, title, year);
+  if (pi.sources.length > 0) return pi;
+
+  try {
+    const r = await vixsrc(tmdbId, type, season, episode);
+    if (r.sources.length > 0) {
+      logger.info(`Fallback vixsrc(http) → ${r.sources.length} source(s) pour tmdb ${tmdbId}`);
+      return r;
     }
+  } catch (e: any) {
+    logger.warn(`Fallback vixsrc(http) échec (tmdb ${tmdbId}): ${e?.message || e}`);
   }
   return { sources: [], subtitles: [] };
 }

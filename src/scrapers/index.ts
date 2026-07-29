@@ -170,8 +170,14 @@ export class ScraperEngine {
           if (mb.data.sources.length > 0) return mb;
         } catch {}
       }
-      // 2) Fallback externe par TMDB id (VO/VOSTFR) quand MovieBox n'a pas le titre
-      const fb = await fallbackStream(tId, (tType as 'movie' | 'tv') || 'movie', season, episode);
+      // 2) Fallback (resolver Pi / vixsrc) par TMDB id quand MovieBox n'a pas le
+      //    titre. On récupère titre+année (utiles à coflix côté Pi).
+      let fbTitle: string | undefined, fbYear: string | undefined;
+      try {
+        const det = await tmdbDetail((tType as TmdbMediaType) || 'movie', parseInt(tId));
+        fbTitle = det?.title; fbYear = det?.year;
+      } catch {}
+      const fb = await fallbackStream(tId, (tType as 'movie' | 'tv') || 'movie', season, episode, fbTitle, fbYear);
       if (fb.sources.length > 0) {
         return {
           data: { sources: fb.sources, dubs: [], subtitles: fb.subtitles, hasResource: true, freeEpisodes: 0 },
