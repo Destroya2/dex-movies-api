@@ -33,14 +33,17 @@ export class ScraperEngine {
   private scrapers: Scraper[] = [];
 
   constructor() {
-    // H5 en premier : le scraper HMAC (api3.aoneroom.com) est bloqué depuis les IP Vercel
+    // H5 = scraper primaire (tout le catalogue VF).
     this.register(new MovieBoxH5Scraper());
-    // VidLink : fournit des streams quand on a un TMDB ID
+    // VidLink : streams par TMDB ID (best-effort).
     this.register(new VidLinkScraper());
-    // FlixHQ (Consumet) : découverte de contenu. Bloqué par Cloudflare depuis Vercel
-    // mais fonctionne en local / IP résidentielle
-    this.register(new FlixHQScraper());
-    this.register(new MovieBoxMobileScraper());
+    // FlixHQ (Consumet) et Mobile HMAC sont BLOQUÉS sur Vercel (Cloudflare / IP) :
+    // en prod ils n'apportent rien et ajoutent ~25 s de latence par appel qui
+    // échoue (risque de 504). On ne les enregistre qu'en local via un flag.
+    if (process.env.ENABLE_BLOCKED_SCRAPERS === '1') {
+      this.register(new FlixHQScraper());
+      this.register(new MovieBoxMobileScraper());
+    }
   }
 
   register(scraper: Scraper): void {
@@ -153,7 +156,18 @@ export class ScraperEngine {
     // que les subjectId MovieBox natifs. Un id tmdb: est résolu par sécurité.
     if (this.isTmdbId(subjectId)) {
       const r = await this.resolveTmdb(subjectId);
-      if (!r) throw new Error(`Aucun flux MovieBox pour ${subjectId}`);
+      // Pas de correspondance MovieBox : détail vide PROPRE (l'app utilise
+      // /catalog/detail pour les métadonnées TMDB de toute façon). Jamais de 500.
+      if (!r) {
+        const [, type] = subjectId.split(':');
+        return {
+          data: {
+            subjectId, detailPath: undefined, title: '', posterUrl: '',
+            type: type === 'tv' ? 'series' : 'movie', dubs: [], freeEpisodes: 0,
+          } as DetailResult,
+          source: 'none',
+        };
+      }
       return this.execute('detail', (s) => s.detail(r.subjectId), `detail(${r.subjectId})`);
     }
     return this.execute('detail', (s) => s.detail(subjectId), `detail(${subjectId})`);

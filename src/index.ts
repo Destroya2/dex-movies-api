@@ -63,6 +63,16 @@ app.get('/', (_req, res) => {
 
 app.use('/api/dex', dexRouter);
 app.use('/api/proxy', proxyRouter);
+
+// Route inconnue → 404 JSON propre (jamais du HTML brut Express)
+app.use((_req, res) => {
+  res.status(404).json({
+    success: false,
+    error: { code: 'NOT_FOUND', message: 'Route inexistante' },
+    meta: { timestamp: Date.now() },
+  });
+});
+
 app.use(errorHandler);
 
 if (!process.env.TEST_MODE) {

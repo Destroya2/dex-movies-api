@@ -100,10 +100,18 @@ async function mapList(results: any[], type: TmdbMediaType): Promise<any[]> {
 
 // ─── Endpoints de catalogue ───────────────────────────────────────────────────
 
+// TMDB n'accepte que les pages 1..500 → on borne pour éviter un 500 upstream.
+function clampPage(page?: number): number {
+  const p = Number(page);
+  if (!Number.isFinite(p) || p < 1) return 1;
+  return Math.min(Math.floor(p), 500);
+}
+
 export async function tmdbTrending(type: TmdbMediaType, page = 1): Promise<{ items: any[]; page: number; hasMore: boolean }> {
-  const data = await tmdbGet(`/trending/${type}/week`, { page });
+  const pg = clampPage(page);
+  const data = await tmdbGet(`/trending/${type}/week`, { page: pg });
   const items = await mapList(data.results || [], type);
-  return { items, page, hasMore: page < (data.total_pages || 1) };
+  return { items, page: pg, hasMore: pg < Math.min(data.total_pages || 1, 500) };
 }
 
 export interface DiscoverParams {
@@ -117,21 +125,23 @@ export interface DiscoverParams {
 
 /** Découverte paginée : le cœur du catalogue infini (filtrable). */
 export async function tmdbDiscover(p: DiscoverParams): Promise<{ items: any[]; page: number; hasMore: boolean }> {
-  const page = p.page ?? 1;
+  const page = clampPage(p.page);
+  const genre = Number.isFinite(Number(p.genre)) ? p.genre : undefined;
+  const year = Number.isFinite(Number(p.year)) ? p.year : undefined;
   const params: Record<string, string | number | undefined> = {
     page,
     sort_by: p.sort || 'popularity.desc',
-    with_genres: p.genre,
+    with_genres: genre,
     'vote_count.gte': 30, // évite le bruit sans votes
   };
   if (p.country) params.with_origin_country = p.country;
-  if (p.year) {
-    if (p.type === 'movie') params.primary_release_year = p.year;
-    else params.first_air_date_year = p.year;
+  if (year) {
+    if (p.type === 'movie') params.primary_release_year = year;
+    else params.first_air_date_year = year;
   }
   const data = await tmdbGet(`/discover/${p.type}`, params);
   const items = await mapList(data.results || [], p.type);
-  return { items, page, hasMore: page < (data.total_pages || 1) };
+  return { items, page, hasMore: page < Math.min(data.total_pages || 1, 500) };
 }
 
 /** Détail complet TMDB (pour la fiche + le pont vers le flux). */

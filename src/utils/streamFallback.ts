@@ -109,10 +109,14 @@ async function piResolver(
   if (token) qs.set('key', token);
 
   try {
-    // Le resolver pilote un navigateur → laisser du temps (jusqu'à 50 s)
+    // IMPORTANT : Vercel coupe la fonction à 30 s (maxDuration). Le pont TMDB a
+    // déjà consommé quelques secondes avant d'arriver ici → on plafonne l'appel
+    // resolver à 20 s pour renvoyer une réponse propre (sources vides) avant le
+    // 504 Vercel. Surchargeable via RESOLVER_TIMEOUT_MS.
+    const timeout = parseInt(process.env.RESOLVER_TIMEOUT_MS || '20000', 10);
     const resp = await request(`${base.replace(/\/$/, '')}/resolve?${qs.toString()}`, {
       headers: { 'User-Agent': UA },
-      timeout: 55000,
+      timeout,
     });
     if (resp.status !== 200) return { sources: [], subtitles: [] };
     const json = JSON.parse(resp.body);
