@@ -1,12 +1,18 @@
 {
   "version": 2,
   "rewrites": [
+    { "source": "/api/resolve/(.*)", "destination": "/api/resolve" },
     { "source": "/(.*)", "destination": "/api/index" }
   ],
   "functions": {
     "api/index.ts": {
       "memory": 512,
       "maxDuration": 30
+    },
+    "api/resolve.ts": {
+      "memory": 256,
+      "maxDuration": 15,
+      "regions": ["cdg1"]
     }
   }
 }
