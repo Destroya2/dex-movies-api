@@ -2,9 +2,16 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { cacheMiddleware } from '../middleware/cache';
 import { AppError } from '../middleware/errorHandler';
 import { ScraperEngine } from '../scrapers';
+import {
+  isTmdbEnabled, tmdbHome, tmdbTrending, tmdbDiscover, tmdbGenres, tmdbDetail, TmdbMediaType,
+} from '../utils/tmdbCatalog';
 
 const router = Router();
 const scraper = new ScraperEngine();
+
+function appTypeToTmdb(type: string): TmdbMediaType {
+  return type === 'series' || type === 'tv' ? 'tv' : 'movie';
+}
 
 function wrapAsync(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -181,6 +188,98 @@ router.get('/trending', cacheMiddleware('home'), wrapAsync(async (req, res) => {
     data: { items: data.items, page, hasMore: data.hasMore },
     meta: { source, cached: false, timestamp: Date.now() },
   });
+}));
+
+// ─── Catalogue TMDB (navigation quasi-infinie) ───────────────────────────────
+
+/**
+ * @openapi
+ * /api/dex/catalog/home:
+ *   get:
+ *     tags: [Catalog]
+ *     summary: Accueil catalogue TMDB (rails façon Netflix)
+ */
+router.get('/catalog/home', cacheMiddleware('home'), wrapAsync(async (_req, res) => {
+  if (!isTmdbEnabled()) throw new AppError(503, 'TMDB_DISABLED', 'Catalogue TMDB non configuré (TMDB_API_KEY manquante)');
+  const data = await tmdbHome();
+  res.json({ success: true, data, meta: { source: 'tmdb', cached: false, timestamp: Date.now() } });
+}));
+
+/**
+ * @openapi
+ * /api/dex/catalog/genres:
+ *   get:
+ *     tags: [Catalog]
+ *     summary: Liste des genres TMDB (chips de filtre)
+ */
+router.get('/catalog/genres', cacheMiddleware('home'), wrapAsync(async (req, res) => {
+  if (!isTmdbEnabled()) throw new AppError(503, 'TMDB_DISABLED', 'Catalogue TMDB non configuré');
+  const type = appTypeToTmdb((req.query.type as string) || 'movie');
+  const data = await tmdbGenres(type);
+  res.json({ success: true, data, meta: { source: 'tmdb', cached: false, timestamp: Date.now() } });
+}));
+
+/**
+ * @openapi
+ * /api/dex/catalog/discover:
+ *   get:
+ *     tags: [Catalog]
+ *     summary: Découverte paginée (catalogue infini filtrable)
+ *     parameters:
+ *       - in: query
+ *         name: type
+ *         schema: { type: string, enum: [movie, series] }
+ *       - in: query
+ *         name: genre
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: country
+ *         schema: { type: string }
+ *       - in: query
+ *         name: year
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: sort
+ *         schema: { type: string }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ */
+router.get('/catalog/discover', cacheMiddleware('home'), wrapAsync(async (req, res) => {
+  if (!isTmdbEnabled()) throw new AppError(503, 'TMDB_DISABLED', 'Catalogue TMDB non configuré');
+  const type = appTypeToTmdb((req.query.type as string) || 'movie');
+  const page = parseInt(req.query.page as string) || 1;
+  const genre = req.query.genre ? parseInt(req.query.genre as string) : undefined;
+  const year = req.query.year ? parseInt(req.query.year as string) : undefined;
+  const country = (req.query.country as string) || undefined;
+  const sort = (req.query.sort as string) || undefined;
+
+  const data = req.query.trending !== undefined
+    ? await tmdbTrending(type, page)
+    : await tmdbDiscover({ type, page, genre, year, country, sort });
+
+  res.json({
+    success: true,
+    data: { tabId: type, title: '', items: data.items, page: data.page, hasMore: data.hasMore },
+    meta: { source: 'tmdb', cached: false, timestamp: Date.now() },
+  });
+}));
+
+/**
+ * @openapi
+ * /api/dex/catalog/detail/{tmdbType}/{tmdbId}:
+ *   get:
+ *     tags: [Catalog]
+ *     summary: Détail d'un titre TMDB
+ */
+router.get('/catalog/detail/:tmdbType/:tmdbId', cacheMiddleware('detail'), wrapAsync(async (req, res) => {
+  if (!isTmdbEnabled()) throw new AppError(503, 'TMDB_DISABLED', 'Catalogue TMDB non configuré');
+  const type = appTypeToTmdb(req.params.tmdbType as string);
+  const id = parseInt(req.params.tmdbId as string);
+  if (!id) throw new AppError(400, 'MISSING_ID', 'tmdbId invalide');
+  const data = await tmdbDetail(type, id);
+  if (!data) throw new AppError(404, 'NOT_FOUND', 'Titre introuvable');
+  res.json({ success: true, data, meta: { source: 'tmdb', cached: false, timestamp: Date.now() } });
 }));
 
 /**
