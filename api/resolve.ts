@@ -21,7 +21,7 @@ async function resolveVixsrc(tmdbId: string, type: 'movie' | 'tv', season?: stri
     headers: { 'User-Agent': UA, 'Referer': 'https://vixsrc.to/' },
   });
   if (r1.status !== 200) return null;
-  const json = await r1.json().catch(() => null);
+  const json: any = await r1.json().catch(() => null);
   const src = json?.src as string | undefined;
   if (!src) return null;
 
