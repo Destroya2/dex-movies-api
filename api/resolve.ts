@@ -5,7 +5,7 @@
 // api/index.ts pour ne PAS changer la région du reste de l'API (le spoof
 // Burkina Faso pour MovieBox reste inchangé, indépendant de la région).
 //
-// GET /api/resolve/vixsrc?tmdb=&type=movie|tv&season=&episode=
+// GET /api/resolve?provider=vixsrc&tmdb=&type=movie|tv&season=&episode=
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36';
 
@@ -43,8 +43,7 @@ async function resolveVixsrc(tmdbId: string, type: 'movie' | 'tv', season?: stri
 
 export default async function handler(req: any, res: any) {
   const url = new URL(req.url, 'http://localhost');
-  const parts = url.pathname.split('/').filter(Boolean); // ["api","resolve","vixsrc"]
-  const provider = parts[parts.length - 1];
+  const provider = url.searchParams.get('provider') || '';
 
   const tmdb = url.searchParams.get('tmdb') || '';
   const type = (url.searchParams.get('type') === 'tv' ? 'tv' : 'movie') as 'movie' | 'tv';
