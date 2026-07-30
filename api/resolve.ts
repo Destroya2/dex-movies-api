@@ -47,6 +47,24 @@ async function resolveVixsrc(tmdbId: string, type: 'movie' | 'tv', season?: stri
   return { sources: [{ url: playlistUrl, format: 'HLS', quality: 1080 }] };
 }
 
+async function resolveVidcore(tmdbId: string, type: 'movie' | 'tv', season?: string, episode?: string): Promise<VixsrcResult | null> {
+  const qs = type === 'tv'
+    ? `id=${tmdbId}&type=tv&mediaType=tv&season=${season}&episode=${episode}`
+    : `id=${tmdbId}&type=movie&mediaType=movie`;
+  const r = await fetch(`https://www.vidcore.org/api/sources?${qs}`, { headers: { 'User-Agent': UA } });
+  if (r.status !== 200) return null;
+  const text = await r.text();
+  const sources: { url: string; format: string; quality: number }[] = [];
+  for (const line of text.trim().split('\n')) {
+    try {
+      const obj = JSON.parse(line);
+      const s = obj?.data?.sources?.[0];
+      if (s?.url) sources.push({ url: s.url, format: 'HLS', quality: 1080 });
+    } catch {}
+  }
+  return sources.length ? { sources } : null;
+}
+
 export default async function handler(req: any, res: any) {
   const url = new URL(req.url, 'http://localhost');
   const provider = url.searchParams.get('provider') || '';
@@ -69,6 +87,15 @@ export default async function handler(req: any, res: any) {
         return;
       }
       res.status(200).json({ success: true, provider: 'vixsrc-paris', data: { sources: result.sources, subtitles: [] } });
+      return;
+    }
+    if (provider === 'vidcore') {
+      const result = await resolveVidcore(tmdb, type, season, episode);
+      if (!result || result.sources.length === 0) {
+        res.status(200).json({ success: false, data: { sources: [] } });
+        return;
+      }
+      res.status(200).json({ success: true, provider: 'vidcore', data: { sources: result.sources, subtitles: [] } });
       return;
     }
     res.status(404).json({ success: false, error: 'provider inconnu' });
