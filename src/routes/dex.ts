@@ -19,6 +19,15 @@ function wrapAsync(fn: (req: Request, res: Response) => Promise<void>) {
   };
 }
 
+// Plafond de longueur sur les params passés aux scrapers/au cache : évite les
+// payloads excessifs (gonflement des clés de cache, ralentissement du matching).
+const MAX_PARAM_LEN = 200;
+function checkLen(value: string | undefined, name: string): void {
+  if (value && value.length > MAX_PARAM_LEN) {
+    throw new AppError(400, 'INVALID_PARAM', `${name} too long`);
+  }
+}
+
 /**
  * @openapi
  * /api/dex/home:
@@ -95,6 +104,7 @@ router.get('/category/:tabId', cacheMiddleware('home'), wrapAsync(async (req, re
  */
 router.get('/search', cacheMiddleware('search'), wrapAsync(async (req, res) => {
   const query = req.query.q as string;
+  checkLen(query, 'q');
   const page = parseInt(req.query.page as string) || 1;
   if (!query || query.length < 2) {
     throw new AppError(400, 'INVALID_QUERY', 'Search query must be at least 2 characters');
@@ -125,6 +135,7 @@ router.get('/search', cacheMiddleware('search'), wrapAsync(async (req, res) => {
  */
 router.get('/suggest', wrapAsync(async (req, res) => {
   const query = req.query.q as string;
+  checkLen(query, 'q');
   if (!query || query.length < 2) {
     res.json({ success: true, data: [] });
     return;
@@ -155,6 +166,7 @@ router.get('/suggest', wrapAsync(async (req, res) => {
  */
 router.get('/detail/:subjectId', cacheMiddleware('detail'), wrapAsync(async (req, res) => {
   const subjectId = req.params.subjectId as string;
+  checkLen(subjectId, 'subjectId');
   if (!subjectId) throw new AppError(400, 'MISSING_ID', 'subjectId is required');
   const { data, source } = await scraper.detail(subjectId);
   res.json({
@@ -305,6 +317,7 @@ router.get('/catalog/detail/:tmdbType/:tmdbId', cacheMiddleware('detail'), wrapA
  */
 router.get('/recommend/:subjectId', cacheMiddleware('home'), wrapAsync(async (req, res) => {
   const subjectId = req.params.subjectId as string;
+  checkLen(subjectId, 'subjectId');
   const page = parseInt(req.query.page as string) || 1;
   if (!subjectId) throw new AppError(400, 'MISSING_ID', 'subjectId is required');
   const { data, source } = await scraper.recommendations(subjectId, page);
@@ -346,9 +359,11 @@ router.get('/recommend/:subjectId', cacheMiddleware('home'), wrapAsync(async (re
 // Pas de cache : les URLs de téléchargement sont signées et expirent (comme /stream)
 router.get('/download/:subjectId', wrapAsync(async (req, res) => {
   const subjectId = req.params.subjectId as string;
+  checkLen(subjectId, 'subjectId');
   const season = parseInt((req.query.season ?? req.query.se) as string) || undefined;
   const episode = parseInt((req.query.episode ?? req.query.ep) as string) || undefined;
   const detailPath = (req.query.detailPath as string) || undefined;
+  checkLen(detailPath, 'detailPath');
   if (!subjectId) throw new AppError(400, 'MISSING_ID', 'subjectId is required');
   const { data, source } = await scraper.downloads(subjectId, season, episode, detailPath);
   res.json({
@@ -391,10 +406,12 @@ router.get('/download/:subjectId', wrapAsync(async (req, res) => {
  */
 router.get('/stream/:subjectId', cacheMiddleware('stream'), wrapAsync(async (req, res) => {
   const subjectId = req.params.subjectId as string;
+  checkLen(subjectId, 'subjectId');
   // Alias se/ep acceptés pour compatibilité avec les anciens clients
   const season = parseInt((req.query.season ?? req.query.se) as string) || 1;
   const episode = parseInt((req.query.episode ?? req.query.ep) as string) || 1;
   const detailPath = (req.query.detailPath as string) || undefined;
+  checkLen(detailPath, 'detailPath');
   if (!subjectId) throw new AppError(400, 'MISSING_ID', 'subjectId is required');
   const { data, source } = await scraper.stream(subjectId, season, episode, detailPath);
   res.json({

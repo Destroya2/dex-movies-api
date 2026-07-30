@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import http from 'http';
 import https from 'https';
+import dns from 'dns';
+import net from 'net';
 import { URL } from 'url';
 import { CDN_DOMAINS, API_BASE_URL } from '../config/constants';
 import { AppError } from '../middleware/errorHandler';
@@ -43,6 +45,46 @@ function isAllowed(urlStr: string): boolean {
   try {
     const parsed = new URL(urlStr);
     return ALLOWED_DOMAINS.has(parsed.hostname) || parsed.hostname.endsWith('.hakunaymatata.com');
+  } catch {
+    return false;
+  }
+}
+
+// Contrairement à /stream (domaines CDN whitelistés statiquement), /captions
+// doit accepter des fournisseurs de sous-titres variés (wyzie.ru, etc.) donc
+// pas de whitelist fixe possible — on bloque plutôt les cibles internes/privées
+// pour empêcher le SSRF (metadata cloud, localhost, réseau interne Vercel).
+function isPrivateIp(ip: string): boolean {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    return false;
+  }
+  if (net.isIPv6(ip)) {
+    const lower = ip.toLowerCase();
+    if (lower === '::1') return true;
+    if (lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd')) return true;
+    if (lower.startsWith('::ffff:')) {
+      const v4 = lower.split(':').pop()!;
+      return net.isIPv4(v4) ? isPrivateIp(v4) : true;
+    }
+    return false;
+  }
+  return true;
+}
+
+async function isSafeExternalUrl(urlStr: string): Promise<boolean> {
+  let parsed: URL;
+  try { parsed = new URL(urlStr); } catch { return false; }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  if (parsed.hostname === 'localhost') return false;
+  if (net.isIP(parsed.hostname)) return !isPrivateIp(parsed.hostname);
+  try {
+    const { address } = await dns.promises.lookup(parsed.hostname);
+    return !isPrivateIp(address);
   } catch {
     return false;
   }
@@ -135,6 +177,7 @@ router.get('/stream', wrapAsync(async (req: Request, res: Response) => {
 router.get('/captions', wrapAsync(async (req: Request, res: Response) => {
   const urlStr = req.query.url as string;
   if (!urlStr) throw new AppError(400, 'MISSING_URL', 'url query parameter is required');
+  if (!(await isSafeExternalUrl(urlStr))) throw new AppError(403, 'FORBIDDEN_TARGET', 'Target not allowed');
 
   try {
     const response = await fetch(urlStr);

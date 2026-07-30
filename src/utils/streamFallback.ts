@@ -8,6 +8,27 @@ import { logger } from '../middleware/logger';
  * si le site est géo/CF-bloqué depuis l'IP appelante.
  *
  * Extracteurs portés de repos/NuvioStreamsAddon/providers (vixsrc.js).
+ *
+ * Recherche de providers additionnels (29/07/2026) — candidats testés et
+ * écartés, pour éviter de refaire cette recherche :
+ * - mp4hydra.org : en maintenance ("Back soon") au moment du test, endpoint
+ *   POST /info2 renvoie 405. Extracteur HTTP pur déjà porté dans
+ *   repos/NuvioStreamsAddon/providers/MP4Hydra.js, à réessayer périodiquement.
+ * - player.vidzee.wtf/api/server : 404, endpoint probablement déplacé depuis
+ *   l'écriture de repos/NuvioStreamsAddon/providers/VidZee.js.
+ * - rivestream.app, autoembed.cc, api.hexa.watch : NXDOMAIN (domaines morts
+ *   ou en rotation — fréquent sur ce type de site).
+ * - vidbinge.to (MoviesAPI) : domaine actif mais pattern d'embed deviné
+ *   (/embed/movie/:id) renvoie 404 ; pattern réel non documenté publiquement.
+ * - vidnest.fun : renvoie une page Next.js, mais l'appel API réel (fetch côté
+ *   client) n'apparaît dans aucun des chunks JS statiquement chargés —
+ *   nécessiterait une rétro-ingénierie type navigateur headless (comme le Pi)
+ *   pour un catalogue dont la taille (115k+ films revendiqués) n'est pas
+ *   vérifiée indépendamment.
+ * - videasy.to/player.videasy.net : appelle un domaine backend obfusqué
+ *   (db.speedracelight.com) dont le protocole n'est pas documenté.
+ * Conclusion : aucun n'est intégrable sans effort de rétro-ingénierie
+ * comparable à celui déjà investi sur le resolver Pi, pour un gain incertain.
  */
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36';

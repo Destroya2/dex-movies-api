@@ -185,10 +185,11 @@ export async function tmdbHome(): Promise<{ sections: any[]; tabs: any[] }> {
     { id: 878, title: 'Science-fiction' },
   ];
 
+  const emptyPage = { items: [] as any[], page: 1, hasMore: false };
   const [trending, popMovies, popSeries] = await Promise.all([
-    tmdbTrending('movie', 1),
-    tmdbDiscover({ type: 'movie', sort: 'popularity.desc', page: 1 }),
-    tmdbDiscover({ type: 'tv', sort: 'popularity.desc', page: 1 }),
+    tmdbTrending('movie', 1).catch(() => emptyPage),
+    tmdbDiscover({ type: 'movie', sort: 'popularity.desc', page: 1 }).catch(() => emptyPage),
+    tmdbDiscover({ type: 'tv', sort: 'popularity.desc', page: 1 }).catch(() => emptyPage),
   ]);
 
   const railResults = await Promise.all(

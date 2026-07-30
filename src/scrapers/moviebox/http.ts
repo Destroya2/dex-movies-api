@@ -16,7 +16,7 @@ export async function mobileRequest(
       const url = mobileUrl(path, host);
       const signedHeaders = buildSignedHeaders({ url, profile: options.profile });
       const mergedHeaders = { ...signedHeaders, ...options.headers };
-      const response = await request(url, { ...options, headers: mergedHeaders });
+      const response = await request(url, { ...options, headers: mergedHeaders, insecureTLS: true });
       if (response.status === 200) {
         return response;
       }

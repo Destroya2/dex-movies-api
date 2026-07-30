@@ -16,6 +16,11 @@ export function request(
     headers?: Record<string, string>;
     body?: string;
     timeout?: number;
+    // Certains hosts mobiles MovieBox servent des certificats non standards ;
+    // ce flag n'est à passer que par ce client-là (voir moviebox/http.ts).
+    // Tous les autres appelants (TMDB, resolver Pi, vidcore, wyzie...) gardent
+    // une validation TLS normale.
+    insecureTLS?: boolean;
   } = {}
 ): Promise<HttpResponse> {
   return new Promise((resolve, reject) => {
@@ -30,7 +35,7 @@ export function request(
         method: options.method || 'GET',
         headers: options.headers || {},
         timeout: options.timeout || 25000,
-        rejectUnauthorized: false,
+        rejectUnauthorized: !options.insecureTLS,
       },
       (res) => {
         const chunks: Buffer[] = [];

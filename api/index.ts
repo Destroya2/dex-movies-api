@@ -5,14 +5,20 @@ import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from '../src/config/swagger';
 import { errorHandler } from '../src/middleware/errorHandler';
 import { metricsMiddleware, metricsHandler } from '../src/middleware/metrics';
+import { apiRateLimiter } from '../src/middleware/rateLimit';
 import dexRouter from '../src/routes/dex';
 
 const app = express();
+
+// Vercel est un proxy devant la fonction : sans ce réglage, express-rate-limit
+// et req.ip retombent sur l'IP du proxy au lieu du vrai client.
+app.set('trust proxy', 1);
 
 app.use(compression());
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 app.use(metricsMiddleware);
+app.use(apiRateLimiter);
 
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
   customCss: '.swagger-ui .topbar { display: none }',
@@ -42,6 +48,15 @@ app.get('/', (_req, res) => {
 });
 
 app.use('/api/dex', dexRouter);
+
+app.use((_req, res) => {
+  res.status(404).json({
+    success: false,
+    error: { code: 'NOT_FOUND', message: 'Route inexistante' },
+    meta: { timestamp: Date.now() },
+  });
+});
+
 app.use(errorHandler);
 
 export default app;
