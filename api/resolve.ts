@@ -13,31 +13,36 @@ interface VixsrcResult {
   sources: { url: string; format: string; quality: number }[];
 }
 
-async function resolveVixsrc(tmdbId: string, type: 'movie' | 'tv', season?: string, episode?: string): Promise<VixsrcResult & { debug?: any } | null> {
+// CONSTAT (vérifié en prod, région cdg1/Paris) : vixsrc.to renvoie 403 dès le
+// premier appel /api/movie, même depuis une IP française. Le blocage est basé
+// sur la classe de l'IP (hébergeur cloud détecté par Cloudflare), pas sur le
+// pays — épingler la fonction sur Paris ne suffit donc pas ici. Il faut une
+// IP réellement résidentielle (voir pi-resolver/). Fonction conservée : la
+// logique HTTP pure reste valable et utile si un jour on la relaie depuis
+// une IP résidentielle (ex: via le Pi comme proxy sortant).
+async function resolveVixsrc(tmdbId: string, type: 'movie' | 'tv', season?: string, episode?: string): Promise<VixsrcResult | null> {
   const apiPath = type === 'tv'
     ? `/api/tv/${tmdbId}/${season}/${episode}`
     : `/api/movie/${tmdbId}`;
   const r1 = await fetch(`https://vixsrc.to${apiPath}?lang=fr`, {
     headers: { 'User-Agent': UA, 'Referer': 'https://vixsrc.to/' },
   });
-  if (r1.status !== 200) return { sources: [], debug: { step: 'api', status: r1.status } };
+  if (r1.status !== 200) return null;
   const json: any = await r1.json().catch(() => null);
   const src = json?.src as string | undefined;
-  if (!src) return { sources: [], debug: { step: 'api-no-src', json } };
+  if (!src) return null;
 
   const idM = /\/embed\/(\d+)/.exec(src);
   const tokenM = /[?&]token=([^&]+)/.exec(src);
   const expiresM = /[?&]expires=(\d+)/.exec(src);
-  if (!idM || !tokenM || !expiresM) return { sources: [], debug: { step: 'regex', src } };
+  if (!idM || !tokenM || !expiresM) return null;
 
   const playlistUrl = `https://vixsrc.to/playlist/${idM[1]}?token=${tokenM[1]}&expires=${expiresM[1]}&h=1&lang=fr`;
 
-  // Vérifie que le flux répond vraiment (évite de renvoyer une URL morte)
   const check = await fetch(playlistUrl, { headers: { 'User-Agent': UA, 'Referer': 'https://vixsrc.to/' } });
+  if (check.status !== 200) return null;
   const body = await check.text();
-  if (check.status !== 200 || !body.startsWith('#EXTM3U')) {
-    return { sources: [], debug: { step: 'playlist', status: check.status, bodyStart: body.slice(0, 100) } };
-  }
+  if (!body.startsWith('#EXTM3U')) return null;
 
   return { sources: [{ url: playlistUrl, format: 'HLS', quality: 1080 }] };
 }
@@ -60,7 +65,7 @@ export default async function handler(req: any, res: any) {
     if (provider === 'vixsrc') {
       const result = await resolveVixsrc(tmdb, type, season, episode);
       if (!result || result.sources.length === 0) {
-        res.status(200).json({ success: false, data: { sources: [] }, debug: result?.debug });
+        res.status(200).json({ success: false, data: { sources: [] } });
         return;
       }
       res.status(200).json({ success: true, provider: 'vixsrc-paris', data: { sources: result.sources, subtitles: [] } });
