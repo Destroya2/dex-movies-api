@@ -172,6 +172,33 @@ export async function tmdbDiscover(p: DiscoverParams): Promise<{ items: any[]; p
   return { items, page, hasMore: page < Math.min(data.total_pages || 1, 500) };
 }
 
+/**
+ * Recherche plein texte TMDB (multi : films + séries). Utilisée comme
+ * COMPLÉMENT de la recherche MovieBox : fournit le catalogue quasi-infini
+ * (TMDB) pour les requêtes où MovieBox n'a rien ou presque rien.
+ */
+export async function tmdbSearch(query: string, page = 1): Promise<{ items: any[]; page: number; hasMore: boolean }> {
+  const pg = clampPage(page);
+  const q = query.trim();
+  if (q.length < 2) return { items: [], page: pg, hasMore: false };
+  try {
+    const data = await tmdbGet('/search/multi', { query: q, page: pg });
+    const results = (data.results || []).filter(
+      (r: any) => r.media_type === 'movie' || r.media_type === 'tv'
+    );
+    const movies = await mapList(results.filter((r: any) => r.media_type === 'movie'), 'movie');
+    const series = await mapList(results.filter((r: any) => r.media_type === 'tv'), 'tv');
+    return {
+      items: [...movies, ...series],
+      page: pg,
+      hasMore: pg < Math.min(data.total_pages || 1, 500),
+    };
+  } catch (e) {
+    logger.warn(`TMDB search failed ("${query}"): ${(e as Error).message}`);
+    return { items: [], page: pg, hasMore: false };
+  }
+}
+
 /** Détail complet TMDB (pour la fiche + le pont vers le flux). */
 export async function tmdbDetail(type: TmdbMediaType, id: number): Promise<any | null> {
   try {

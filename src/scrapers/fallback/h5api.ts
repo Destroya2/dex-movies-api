@@ -47,6 +47,19 @@ const CATEGORY_TABS: { id: string; title: string }[] = [
   { id: 'series', title: 'TV Series' },
 ];
 
+/**
+ * Fiches connues comme CASSÉES côté upstream (catalogue MovieBox) :
+ * subjectId → raison. Leur ressource vidéo est erronée (fichier d'un autre
+ * film) ou absente. Exclues de la recherche, des recommandations et des
+ * candidats du bridge TMDB — mieux vaut pas de résultat qu'un mauvais fichier.
+ * À enrichir au fil des signalements utilisateur.
+ */
+const BROKEN_SUBJECTS: Record<string, string> = {
+  '5785946876918776912': 'Ressource vidéo d\'un autre film (upstream)',
+};
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 function getCornerLanguage(corner: string, title?: string, detailPath?: string, subtitleLangs?: string): { isFrench: boolean; language?: string } {
   // PRIMAIRE : champ corner upstream (fiable à 100%)
   if (corner) {
@@ -303,50 +316,77 @@ export class MovieBoxH5Scraper implements Scraper {
   }
 
   async search(query: string, page: number = 1): Promise<SearchResult> {
-    let items: any[] = [];
+    // ⚠️ La pagination upstream est ERRATIQUE : page 1 renvoie parfois 2 items
+    // malgré totalCount > 100, et le perPage demandé est ignoré/recadré (2, 4,
+    // 6, 10 items selon les appels). On page donc JUSQU'À ÉPUISEMENT (hasMore)
+    // et on déduplique — sinon une recherche comme "spider man" n'afficherait
+    // que 2 résultats sur les 38 titres réellement disponibles.
+    const MAX_UPSTREAM_PAGES = 12;
+    const seen = new Map<string, any>();
     let total = 0;
 
     // Essai 1 : endpoint de recherche standard
     try {
-      const body = JSON.stringify({ keyword: query, page, perPage: 20 });
-      const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Search}`, { method: 'POST', body });
-      const inner = json?.data || {};
-      const raw = inner.items || inner.list || [];
-      total = inner.pager?.totalCount || inner.total || raw.length;
+      for (let p = 1; p <= MAX_UPSTREAM_PAGES; p++) {
+        const body = JSON.stringify({ keyword: query, page: p, perPage: 20 });
+        const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Search}`, { method: 'POST', body });
+        const inner = json?.data || {};
+        const raw = inner.items || inner.list || [];
+        total = inner.pager?.totalCount || inner.total || raw.length;
 
-      items = raw
-        .map((item: any) => {
-          const mapped = mapSubject(item.subject || item, item.detailPath);
-          if (!mapped) return null;
+        for (const entry of raw) {
+          const sub = entry.subject || entry;
+          // subjectType 6 = musique (clips, chansons) : jamais en recherche film
+          if (sub?.subjectType === 6) continue;
+          const mapped = mapSubject(sub, entry.detailPath);
+          if (!mapped) continue;
+          if (BROKEN_SUBJECTS[mapped.subjectId]) continue;
           const cached = this.homeFrenchCache.get(mapped.subjectId);
           if (cached && !mapped.isFrench) {
             mapped.isFrench = cached.isFrench;
             mapped.language = cached.language;
             mapped.badge = cached.badge;
           }
-          return mapped;
-        })
-        .filter(Boolean);
+          if (!seen.has(mapped.subjectId)) seen.set(mapped.subjectId, mapped);
+        }
+
+        const hasMore = inner.pager?.hasMore === true;
+        if (!hasMore || p >= MAX_UPSTREAM_PAGES) break;
+        await sleep(150); // évite de se faire bloquer par l'upstream
+      }
     } catch (err) {
       logger.warn(`Search failed for "${query}", trying filter fallback: ${(err as Error).message}`);
     }
 
     // Essai 2 (fallback) : endpoint filter avec le mot-clé comme tabId=0 (tendance/Tout)
-    if (items.length === 0) {
+    if (seen.size === 0) {
       try {
-        const body = JSON.stringify({ tabId: 0, page, perPage: 20, classify: 'French dub' });
+        const body = JSON.stringify({ tabId: 0, page: 1, perPage: 20, classify: 'French dub' });
         const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Filter}`, { method: 'POST', body });
         const inner = json?.data || {};
         const raw = inner.items || inner.list || [];
-        items = raw.map((sub: any) => mapSubject(sub)).filter(Boolean);
-        total = inner.pager?.totalCount || inner.total || items.length;
+        for (const entry of raw) {
+          const sub = entry.subject || entry;
+          if (sub?.subjectType === 6) continue;
+          const mapped = mapSubject(sub);
+          if (!mapped || BROKEN_SUBJECTS[mapped.subjectId]) continue;
+          if (!seen.has(mapped.subjectId)) seen.set(mapped.subjectId, mapped);
+        }
+        total = inner.pager?.totalCount || inner.total || seen.size;
       } catch { /* échec silencieux */ }
     }
 
-    const sorted = prioritizeFrench(items);
+    const all = [...seen.values()];
+    const sorted = prioritizeFrench(all);
     for (const item of sorted) this.rememberSlug(item.subjectId, item.detailPath);
 
-    return { items: sorted, total, page };
+    // Pagination applicative sur l'ensemble collecté (20/page) — l'app garde un
+    // contrat stable même si la pagination upstream est erratique.
+    const perPage = 20;
+    const start = (page - 1) * perPage;
+    const items = sorted.slice(start, start + perPage);
+
+    return { items, total: all.length, page };
   }
 
   async suggest(query: string): Promise<SuggestResult[]> {
@@ -375,6 +415,16 @@ export class MovieBoxH5Scraper implements Scraper {
   }
 
   async detail(subjectId: string): Promise<DetailResult> {
+    // Fiche cassée : détail vide → l'app (résiliente) garde les infos de la
+    // liste et la lecture est bloquée par stream().
+    if (BROKEN_SUBJECTS[String(subjectId)]) {
+      logger.warn(`Detail refusé pour la fiche cassée ${subjectId} (${BROKEN_SUBJECTS[String(subjectId)]})`);
+      return {
+        subjectId: String(subjectId), title: '', posterUrl: '', type: 'movie',
+        dubs: [], freeEpisodes: 0,
+      };
+    }
+
     const json = await this.authedRequest(`${API_H5_URL}${ENDPOINTS.h5Detail}?subjectId=${subjectId}`);
     const data = json?.data || {};
     const sub = data.subject || data;
@@ -434,10 +484,6 @@ export class MovieBoxH5Scraper implements Scraper {
     return d.detailPath;
   }
 
-  private hasAnyStream(playData: any): boolean {
-    return (playData?.streams?.length || 0) + (playData?.dash?.length || 0) + (playData?.hls?.length || 0) > 0;
-  }
-
   private async fetchPlay(domain: string, subjectId: string, slug: string, se: number, ep: number): Promise<any> {
     const playerReferer = `${domain}/spa/videoPlayPage/movies/${slug}?id=${subjectId}&type=/movie/detail&detailSe=${se}&detailEp=${ep}&lang=en`;
     const playUrl = `${domain}${ENDPOINTS.h5Play}?subjectId=${subjectId}&se=${se}&ep=${ep}&detailPath=${slug}`;
@@ -455,6 +501,13 @@ export class MovieBoxH5Scraper implements Scraper {
   }
 
   async stream(subjectId: string, season?: number, episode?: number, detailPath?: string): Promise<StreamResult> {
+    // Fiche connue comme cassée côté upstream (ressource d'un autre film) :
+    // on ne renvoie AUCUNE source — jamais le mauvais fichier au lecteur.
+    if (BROKEN_SUBJECTS[String(subjectId)]) {
+      logger.warn(`Stream refusé pour la fiche cassée ${subjectId} (${BROKEN_SUBJECTS[String(subjectId)]})`);
+      return { sources: [], dubs: [], subtitles: [], hasResource: false, freeEpisodes: 0 };
+    }
+
     const se = season ?? 1;
     const ep = episode ?? 1;
 
@@ -478,12 +531,36 @@ export class MovieBoxH5Scraper implements Scraper {
       }
     }
 
-    let playData = await this.fetchPlay(domain, subjectId, slug, se, ep);
+    // ⚠️ Le domaine de lecture découvert (ex. netfilm.world) renvoie parfois des
+    // streams SANS URL exploitable (`vipLocked`, signCookie à remplir — observé
+    // sur les séries S1E1), alors que l'API h5 (h5-api.aoneroom.com) renvoie
+    // l'URL signée pour le même contenu. → on essaie chaque hôte (domaine
+    // découvert puis API + miroirs) jusqu'à obtenir une source à URL non vide.
+    const playHosts = [...new Set([domain, API_H5_URL, ...API_H5_MIRRORS])];
 
-    if (!this.hasAnyStream(playData) && se === 1 && ep === 1) {
-      playData = await this.fetchPlay(domain, subjectId, slug, 0, 0);
+    const tryPlay = async (se2: number, ep2: number): Promise<{ playData: any; rawStreams: any[] }> => {
+      let lastPd: any = {};
+      for (const host of playHosts) {
+        try {
+          const pd = await this.fetchPlay(host, subjectId, slug, se2, ep2);
+          lastPd = pd;
+          const rs = [...(pd.streams || []), ...(pd.dash || []), ...(pd.hls || [])];
+          if (rs.some((s: any) => !!s.url)) {
+            return { playData: pd, rawStreams: rs };
+          }
+        } catch {
+          continue;
+        }
+      }
+      return { playData: lastPd, rawStreams: [] };
+    };
+
+    let { playData, rawStreams } = await tryPlay(se, ep);
+    // Films / appels par défaut (se=1, ep=1) : si aucune source exploitable,
+    // retenter en mode "film" (se=0, ep=0) comme le fait l'upstream.
+    if (rawStreams.length === 0 && se === 1 && ep === 1) {
+      ({ playData, rawStreams } = await tryPlay(0, 0));
     }
-    const rawStreams = [...(playData.streams || []), ...(playData.dash || []), ...(playData.hls || [])];
 
 
     const seen = new Set<string>();
@@ -507,6 +584,12 @@ export class MovieBoxH5Scraper implements Scraper {
       seen.add(s.url);
       return true;
     });
+
+    // ⚠️ PAS de validation HTTP des sources ici : testée puis retirée — le CDN
+    // (hakunaymatata.com) renvoie des 403 incohérents (rate-limit par IP, sign
+    // volatil) qui faisaient jeter des sources VALIDES et cassaient la lecture.
+    // La fiabilité est assurée autrement : blocklist BROKEN_SUBJECTS (fiches
+    // upstream erronées) côté backend + failover multi-source côté lecteur.
 
     const subtitles = await this.fetchCaptions(subjectId, slug, sources[0]);
 
@@ -560,6 +643,7 @@ export class MovieBoxH5Scraper implements Scraper {
       for (const sub of op.subjects || []) {
         // subjectType 6 = musique : jamais dans l'Explorer d'une app de films
         if (sub?.subjectType === 6) continue;
+        if (BROKEN_SUBJECTS[String(sub?.subjectId)]) continue;
         const item = mapSubject(sub);
         if (!item) continue;
         if (!byId.has(item.subjectId)) byId.set(item.subjectId, item);
@@ -632,6 +716,7 @@ export class MovieBoxH5Scraper implements Scraper {
     const items = raw.map((entry: any) => {
       const item = mapSubject(entry.subject || entry);
       if (!item) return null;
+      if (BROKEN_SUBJECTS[item.subjectId]) return null;
       const cached = this.homeFrenchCache.get(item.subjectId);
       if (cached && !item.isFrench) {
         item.isFrench = cached.isFrench;

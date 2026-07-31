@@ -1,7 +1,7 @@
 import { Scraper, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult, RecommendResult, DownloadResult } from './base';
 import { MovieBoxMobileScraper } from './moviebox/index';
 import { MovieBoxH5Scraper } from './fallback/h5api';
-import { tmdbDetail, TmdbMediaType } from '../utils/tmdbCatalog';
+import { tmdbDetail, tmdbSearch, isTmdbEnabled, TmdbMediaType } from '../utils/tmdbCatalog';
 import { enrichWithTmdb } from '../utils/tmdb';
 import { bestMatch } from '../utils/titleMatch';
 import { fallbackStream } from '../utils/streamFallback';
@@ -161,7 +161,32 @@ export class ScraperEngine {
   }
 
   async search(query: string, page: number = 1): Promise<{ data: SearchResult; source: string }> {
-    return this.execute('search', (s) => s.search(query, page), `search(${query})`);
+    // 1) MovieBox (scraper primaire) : résultats natifs en tête, badges VF fiables.
+    const moviebox = await this.execute('search', (s) => s.search(query, page), `search(${query})`);
+    const mbItems = (moviebox.data.items || []).map((i: any) => ({ ...i, source: 'moviebox' }));
+    const mbIds = new Set(mbItems.map((i: any) => i.subjectId));
+
+    // 2) TMDB en complément (catalogue quasi-infini) : couvre les titres absents
+    //    ou cassés côté MovieBox. Best-effort : si TMDB échoue, on garde les
+    //    résultats MovieBox seuls. Jamais en doublon d'un subjectId MovieBox.
+    let tmdbItems: any[] = [];
+    if (isTmdbEnabled()) {
+      try {
+        const t = await tmdbSearch(query, 1);
+        tmdbItems = t.items
+          .map((i: any) => ({ ...i, source: 'tmdb' }))
+          .filter((i: any) => !mbIds.has(i.subjectId))
+          .slice(0, 20);
+      } catch (e: any) {
+        logger.warn(`TMDB search merge failed ("${query}"): ${e?.message || e}`);
+      }
+    }
+
+    const items = [...mbItems, ...tmdbItems];
+    return {
+      data: { items, total: (moviebox.data.total || mbItems.length) + tmdbItems.length, page },
+      source: moviebox.source,
+    };
   }
 
   async suggest(query: string): Promise<{ data: SuggestResult[]; source: string }> {
