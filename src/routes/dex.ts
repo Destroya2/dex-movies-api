@@ -168,11 +168,24 @@ router.get('/detail/:subjectId', cacheMiddleware('detail'), wrapAsync(async (req
   const subjectId = req.params.subjectId as string;
   checkLen(subjectId, 'subjectId');
   if (!subjectId) throw new AppError(400, 'MISSING_ID', 'subjectId is required');
-  const { data, source } = await scraper.detail(subjectId);
+  let result;
+  try {
+    result = await scraper.detail(subjectId);
+  } catch (e: any) {
+    // Certains titres disparaissent du catalogue upstream : la fiche répond en
+    // erreur sur tous les miroirs. Ce n'est PAS un bug de notre API — on renvoie
+    // donc 404 (titre indisponible) plutôt qu'un 500 « Internal server error »,
+    // qui polluait les métriques et masquait les vraies pannes.
+    // Côté clients rien ne change : Android garde les infos de la liste (détail
+    // résilient) et la PWA affiche son état d'erreur — tous deux traitent déjà
+    // n'importe quel statut non-2xx de la même façon.
+    throw new AppError(404, 'UPSTREAM_UNAVAILABLE',
+      "Ce titre n'est plus disponible chez la source.");
+  }
   res.json({
     success: true,
-    data,
-    meta: { source, cached: false, timestamp: Date.now() },
+    data: result.data,
+    meta: { source: result.source, cached: false, timestamp: Date.now() },
   });
 }));
 

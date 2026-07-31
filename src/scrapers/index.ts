@@ -124,6 +124,16 @@ export class ScraperEngine {
           try {
             const { data } = await this.search(q, 1);
             for (const it of data.items || []) {
+              // ⚠️ CRUCIAL : depuis la fusion MovieBox+TMDB dans search(), les
+              // résultats contiennent aussi des items `tmdb:type:id`. Le pont
+              // cherche un sujet MOVIEBOX réel (pour la lecture) — il ne doit
+              // JAMAIS retenir un id tmdb:, sinon on le repasse au scraper
+              // MovieBox qui échoue (→ 500 sur /detail, aucune source sur
+              // /stream). Le piège est sournois : on cherche par le titre TMDB
+              // exact, donc le candidat TMDB est un match PARFAIT (score 1.08)
+              // et bat systématiquement le vrai sujet MovieBox dont le titre
+              // diffère un peu ("Supergirl" vs "Supergirl: Woman of Tomorrow").
+              if (this.isTmdbId(it.subjectId)) continue;
               if (!seen.has(it.subjectId)) { seen.add(it.subjectId); candidates.push(it); }
             }
           } catch {}
@@ -169,8 +179,13 @@ export class ScraperEngine {
     // 2) TMDB en complément (catalogue quasi-infini) : couvre les titres absents
     //    ou cassés côté MovieBox. Best-effort : si TMDB échoue, on garde les
     //    résultats MovieBox seuls. Jamais en doublon d'un subjectId MovieBox.
+    //    ⚠️ Uniquement sur la page 1 : c'est une SECTION complémentaire (l'app
+    //    l'affiche sous « Aussi disponibles »), pas la suite de la liste
+    //    MovieBox. Sans ce garde-fou, `tmdbSearch(query, 1)` étant toujours
+    //    appelée avec la page 1, chaque page suivante réaffichait exactement
+    //    les 20 mêmes titres TMDB (doublons vérifiés en prod page1 vs page2).
     let tmdbItems: any[] = [];
-    if (isTmdbEnabled()) {
+    if (isTmdbEnabled() && page === 1) {
       try {
         const t = await tmdbSearch(query, 1);
         tmdbItems = t.items
