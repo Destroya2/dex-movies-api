@@ -3,7 +3,7 @@ import { cacheMiddleware } from '../middleware/cache';
 import { AppError } from '../middleware/errorHandler';
 import { ScraperEngine } from '../scrapers';
 import {
-  isTmdbEnabled, tmdbHome, tmdbTrending, tmdbDiscover, tmdbGenres, tmdbDetail, TmdbMediaType,
+  isTmdbEnabled, tmdbHome, tmdbTrending, tmdbDiscover, tmdbGenres, tmdbDetail, tmdbSimilar, TmdbMediaType,
 } from '../utils/tmdbCatalog';
 
 const router = Router();
@@ -291,6 +291,23 @@ router.get('/catalog/detail/:tmdbType/:tmdbId', cacheMiddleware('detail'), wrapA
   if (!id) throw new AppError(400, 'MISSING_ID', 'tmdbId invalide');
   const data = await tmdbDetail(type, id);
   if (!data) throw new AppError(404, 'NOT_FOUND', 'Titre introuvable');
+  res.json({ success: true, data, meta: { source: 'tmdb', cached: false, timestamp: Date.now() } });
+}));
+
+/**
+ * @openapi
+ * /api/dex/catalog/similar/{tmdbType}/{tmdbId}:
+ *   get:
+ *     tags: [Catalog]
+ *     summary: Titres similaires (TMDB natif, marche même sans bridge MovieBox)
+ */
+router.get('/catalog/similar/:tmdbType/:tmdbId', cacheMiddleware('home'), wrapAsync(async (req, res) => {
+  if (!isTmdbEnabled()) throw new AppError(503, 'TMDB_DISABLED', 'Catalogue TMDB non configuré');
+  const type = appTypeToTmdb(req.params.tmdbType as string);
+  const id = parseInt(req.params.tmdbId as string);
+  if (!id) throw new AppError(400, 'MISSING_ID', 'tmdbId invalide');
+  const page = parseInt(req.query.page as string) || 1;
+  const data = await tmdbSimilar(type, id, page);
   res.json({ success: true, data, meta: { source: 'tmdb', cached: false, timestamp: Date.now() } });
 }));
 

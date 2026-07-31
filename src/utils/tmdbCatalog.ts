@@ -173,6 +173,15 @@ export async function tmdbDetail(type: TmdbMediaType, id: number): Promise<any |
     const base = mapTmdbItem(detail, type, genreMap);
     if (!base) return null;
     const cast = (detail.credits?.cast || []).slice(0, 12).map((c: any) => c.name).filter(Boolean);
+    // Déjà dans la réponse (credits demandé via append_to_response) : juste jamais extrait avant.
+    const director = (detail.credits?.crew || []).find((c: any) => c.job === 'Director')?.name;
+    const studio = detail.production_companies?.[0]?.name;
+    // videos.results est déjà dans la réponse (append_to_response) : on choisit la
+    // meilleure bande-annonce YouTube (officielle en priorité).
+    const videos = (detail.videos?.results || []) as any[];
+    const trailer = videos.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
+      || videos.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
+      || videos.find((v) => v.site === 'YouTube');
     return {
       ...base,
       // Titre original (souvent anglais) : MovieBox indexe beaucoup de titres ainsi
@@ -182,12 +191,32 @@ export async function tmdbDetail(type: TmdbMediaType, id: number): Promise<any |
         : (detail.episode_run_time?.[0] ? `${detail.episode_run_time[0]}m` : undefined),
       country: (detail.origin_country || [])[0] || detail.production_countries?.[0]?.iso_3166_1,
       cast: cast.length ? cast : undefined,
+      director,
+      studio,
+      trailerKey: trailer?.key,
       imdbId: detail.external_ids?.imdb_id,
       seasonsCount: detail.number_of_seasons,
     };
   } catch (e) {
     logger.warn(`TMDB detail failed (${type}/${id}): ${(e as Error).message}`);
     return null;
+  }
+}
+
+/**
+ * Titres similaires (TMDB natif, /similar) — distinct des recommandations
+ * MovieBox (ScraperEngine.recommendations, qui ne marche que pour un
+ * subjectId déjà bridgé). Disponible pour n'importe quel id TMDB, bridgé ou non.
+ */
+export async function tmdbSimilar(type: TmdbMediaType, id: number, page = 1): Promise<{ items: any[]; page: number; hasMore: boolean }> {
+  const pg = clampPage(page);
+  try {
+    const data = await tmdbGet(`/${type}/${id}/similar`, { page: pg });
+    const items = await mapList(data.results || [], type);
+    return { items, page: pg, hasMore: pg < Math.min(data.total_pages || 1, 500) };
+  } catch (e) {
+    logger.warn(`TMDB similar failed (${type}/${id}): ${(e as Error).message}`);
+    return { items: [], page: pg, hasMore: false };
   }
 }
 
