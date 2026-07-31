@@ -52,6 +52,9 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 export interface FallbackStream {
   sources: { url: string; format: string; quality: number; codec?: string }[];
   subtitles: { url: string; language: string }[];
+  // 'fr' seulement quand la source est connue pour être en VF (coflix). Absent
+  // si inconnu/probablement VO (vixsrc, vidcore) — jamais une estimation optimiste.
+  audioLanguage?: string;
 }
 
 // ─── vidcore.org (hébergé, pré-proxifié) ──────────────────────────────────────
@@ -83,7 +86,8 @@ async function vidcore(tmdbId: string, type: 'movie' | 'tv', season?: number, ep
     if (sources.length === 0) return { sources: [], subtitles: [] };
 
     const subtitles = await wyzieSubs(tmdbId, season, episode);
-    return { sources, subtitles };
+    // Confirmé VO (jamais de VF sur ce provider, voir commentaire plus haut).
+    return { sources, subtitles, audioLanguage: 'vo' };
   } catch {
     return { sources: [], subtitles: [] };
   }
@@ -115,10 +119,10 @@ async function wyzieSubs(tmdbId: string, season?: number, episode?: number): Pro
 }
 
 // ─── Resolver Pi (navigateur headless, IP résidentielle) ─────────────────────
-// Service tournant sur le Raspberry Pi (voir pi-resolver/), exposé via Tailscale
-// Funnel. Capture le flux par interception réseau → débloque les titres que ni
-// MovieBox ni le HTTP simple ne donnent. Best-effort : si le Pi est hors-ligne,
-// on dégrade proprement.
+// Service tournant sur le Raspberry Pi (voir pi-resolver/), exposé via un
+// tunnel Cloudflare nommé (resolver.iafr-ahd.com). Capture le flux par
+// interception réseau → débloque les titres que ni MovieBox ni le HTTP simple
+// ne donnent. Best-effort : si le Pi est hors-ligne, on dégrade proprement.
 async function piResolver(
   tmdbId: string,
   type: 'movie' | 'tv',
@@ -156,6 +160,9 @@ async function piResolver(
         url: s.url, format: s.format || 'HLS', quality: s.quality || 1080,
       })),
       subtitles: (json.data.subtitles || []).map((c: any) => ({ url: c.url, language: c.language || 'Unknown' })),
+      // coflix = site FR, VF par construction. vixsrc = VO la plupart du temps,
+      // jamais garanti même avec le paramètre lang=fr → on ne prétend rien.
+      audioLanguage: json.provider === 'coflix' ? 'fr' : undefined,
     };
   } catch (e: any) {
     logger.warn(`Resolver Pi injoignable (tmdb ${tmdbId}): ${e?.message || e}`);

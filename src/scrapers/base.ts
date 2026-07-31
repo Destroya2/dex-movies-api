@@ -50,6 +50,11 @@ export interface StreamResult {
   subtitles: any[];
   hasResource: boolean;
   freeEpisodes: number;
+  // Langue audio connue avec certitude (pas une estimation) : 'fr' quand la
+  // source vient de MovieBox (VF garantie) ou d'un provider VF identifié
+  // (coflix), absent/'?' pour un provider dont on ne connaît pas la langue
+  // réelle (vixsrc/vidcore, VO la plupart du temps mais jamais garanti).
+  audioLanguage?: string;
 }
 
 export interface RecommendResult {

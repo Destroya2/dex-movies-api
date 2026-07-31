@@ -234,7 +234,10 @@ export class ScraperEngine {
       const fb = await fallbackStream(tId, (tType as 'movie' | 'tv') || 'movie', season, episode, fbTitle, fbYear);
       if (fb.sources.length > 0) {
         return {
-          data: { sources: fb.sources, dubs: [], subtitles: fb.subtitles, hasResource: true, freeEpisodes: 0 },
+          data: {
+            sources: fb.sources, dubs: [], subtitles: fb.subtitles, hasResource: true, freeEpisodes: 0,
+            audioLanguage: fb.audioLanguage,
+          },
           source: 'fallback',
         };
       }
