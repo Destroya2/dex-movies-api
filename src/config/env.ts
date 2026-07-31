@@ -5,7 +5,9 @@ export const ENV = {
   CACHE_HOME_TTL: parseInt(process.env.CACHE_HOME_TTL || '300', 10),
   CACHE_DETAIL_TTL: parseInt(process.env.CACHE_DETAIL_TTL || '600', 10),
   CACHE_SEARCH_TTL: parseInt(process.env.CACHE_SEARCH_TTL || '120', 10),
-  CACHE_STREAM_TTL: parseInt(process.env.CACHE_STREAM_TTL || '1800', 10),
+  // Les URLs de flux sont souvent signées/à courte durée de vie (comme /download,
+  // qui lui n'est pas caché du tout) : un TTL long risque de servir un lien expiré.
+  CACHE_STREAM_TTL: parseInt(process.env.CACHE_STREAM_TTL || '90', 10),
   CACHE_TOKEN_TTL: parseInt(process.env.CACHE_TOKEN_TTL || '1500', 10),
 
   RATE_LIMIT_WINDOW_MS: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),

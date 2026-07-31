@@ -61,6 +61,25 @@ export async function tmdbGenres(type: TmdbMediaType): Promise<{ id: number; nam
   return [...map.entries()].map(([id, name]) => ({ id, name }));
 }
 
+// ─── Langue audio d'origine (ISO 639-1 → libellé FR) ──────────────────────────
+// TMDB fournit original_language sur chaque item sans appel supplémentaire.
+// Contrairement au badge VF/VOSTFR (MovieBox natif, connu seulement à la
+// résolution du flux), ceci reflète la langue d'origine du contenu, toujours
+// disponible dès le catalogue.
+const LANGUAGE_LABELS: Record<string, string> = {
+  fr: 'Français', en: 'Anglais', hi: 'Hindi', ja: 'Japonais', ko: 'Coréen',
+  es: 'Espagnol', de: 'Allemand', it: 'Italien', zh: 'Chinois', cn: 'Chinois',
+  pt: 'Portugais', ru: 'Russe', ar: 'Arabe', th: 'Thaï', tr: 'Turc',
+  nl: 'Néerlandais', sv: 'Suédois', pl: 'Polonais', da: 'Danois', fi: 'Finnois',
+  no: 'Norvégien', id: 'Indonésien', ta: 'Tamoul', te: 'Télougou', ur: 'Ourdou',
+  fa: 'Persan', he: 'Hébreu', pa: 'Pendjabi', vi: 'Vietnamien', uk: 'Ukrainien',
+};
+
+function languageLabel(iso: string | undefined): string | undefined {
+  if (!iso) return undefined;
+  return LANGUAGE_LABELS[iso.toLowerCase()] || iso.toUpperCase();
+}
+
 // ─── Mapping TMDB → ContentItem ───────────────────────────────────────────────
 function mapTmdbItem(raw: any, type: TmdbMediaType, genreMap: Map<number, string>): any | null {
   if (!raw || !raw.id) return null;
@@ -87,9 +106,11 @@ function mapTmdbItem(raw: any, type: TmdbMediaType, genreMap: Map<number, string
     year: date ? date.slice(0, 4) : undefined,
     genres: genres.length ? genres : undefined,
     plot: raw.overview || undefined,
-    // La VF n'est connue qu'à la résolution du flux → pas de badge ici.
-    isFrench: undefined,
-    language: undefined,
+    // La disponibilité VF (MovieBox) n'est connue qu'à la résolution du flux ;
+    // ce badge montre la langue d'ORIGINE du contenu (toujours dispo via TMDB),
+    // pas une garantie de doublage français.
+    isFrench: raw.original_language === 'fr' ? true : undefined,
+    language: languageLabel(raw.original_language),
   };
 }
 

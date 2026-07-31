@@ -5,6 +5,7 @@ import { tmdbDetail, TmdbMediaType } from '../utils/tmdbCatalog';
 import { bestMatch } from '../utils/titleMatch';
 import { fallbackStream } from '../utils/streamFallback';
 import { logger } from '../middleware/logger';
+import { recordBridgeResult } from '../middleware/metrics';
 
 type ScraperMethod = 'home' | 'search' | 'suggest' | 'detail' | 'stream' | 'category';
 
@@ -140,8 +141,10 @@ export class ScraperEngine {
             },
           };
           logger.info(`Bridge TMDB ${subjectId} ("${detail.title}") → MovieBox ${match.item.subjectId} (score ${match.score.toFixed(2)})`);
+          recordBridgeResult(true);
         } else {
           logger.warn(`Bridge TMDB ${subjectId} ("${detail.title}"/"${detail.originalTitle || ''}") : aucun match MovieBox (${candidates.length} candidats)`);
+          recordBridgeResult(false);
         }
       }
     } catch (e: any) {
