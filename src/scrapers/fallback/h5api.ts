@@ -640,6 +640,48 @@ export class MovieBoxH5Scraper implements Scraper {
       }
       return item;
     }).filter(Boolean);
+
+    // webDetailRec ne fournit NI corner NI titre localisé (titres anglais) →
+    // badge VF manquant côté app et titres affichés en anglais. Le détail h5,
+    // lui, renvoie le titre français + le corner (« En français »/« VOSTFR »)
+    // quand le contenu est doublé : on enrichit les items dont la langue est
+    // inconnue (un seul appel h5 par item, mis en cache pour les requêtes
+    // suivantes). En cas d'échec → on garde l'item tel quel (pas de régression).
+    // Plafonné à 8 appels parallèles max (pas les 18 de perPage) : chaque appel
+    // est un /subject/detail complet côté upstream, et un burst non borné sur
+    // le scraper h5 PRIMAIRE (dont dépend tout le streaming VF) risquerait de
+    // déclencher un rate-limit upstream ou d'approcher le maxDuration Vercel
+    // (30s) sur cache froid. 8 couvre déjà largement ce qui est visible sans
+    // scroller sur la grille "Pour vous".
+    const missing = items
+      .filter((i: any) => !i.language && !this.homeFrenchCache.get(i.subjectId))
+      .slice(0, 8);
+    if (missing.length > 0) {
+      const settled = await Promise.allSettled(missing.map((m: any) => this.detail(m.subjectId)));
+      settled.forEach((r, idx) => {
+        if (r.status !== 'fulfilled') return;
+        const d = r.value;
+        const item = missing[idx];
+        if (!d?.title && !d?.language) return;
+        item.title = d.title || item.title;
+        item.detailPath = d.detailPath || item.detailPath;
+        item.posterUrl = d.posterUrl || item.posterUrl;
+        // Corner du détail h5 (fiable) ; sinon marqueurs dans le titre localisé
+        // (« [Version française] », « [VF] », « [VOSTFR] »).
+        const lang = d.language === 'VF' || d.language === 'VOSTFR'
+          ? { isFrench: d.isFrench, language: d.language }
+          : getCornerLanguage('', d.title || item.title, d.detailPath || item.detailPath, d.subtitleLangs);
+        item.isFrench = lang.isFrench;
+        item.language = lang.language;
+        item.badge = lang.language || item.badge;
+        this.homeFrenchCache.set(item.subjectId, {
+          isFrench: lang.isFrench,
+          language: lang.language,
+          badge: lang.language,
+        });
+      });
+    }
+
     for (const item of items) this.rememberSlug(item.subjectId, item.detailPath);
 
     const pager = inner.pager || {};
