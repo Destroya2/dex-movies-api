@@ -2,6 +2,7 @@ import { Scraper, HomeResult, SearchResult, SuggestResult, DetailResult, StreamR
 import { MovieBoxMobileScraper } from './moviebox/index';
 import { MovieBoxH5Scraper } from './fallback/h5api';
 import { tmdbDetail, TmdbMediaType } from '../utils/tmdbCatalog';
+import { enrichWithTmdb } from '../utils/tmdb';
 import { bestMatch } from '../utils/titleMatch';
 import { fallbackStream } from '../utils/streamFallback';
 import { logger } from '../middleware/logger';
@@ -172,16 +173,34 @@ export class ScraperEngine {
     // que les subjectId MovieBox natifs. Un id tmdb: est résolu par sécurité.
     if (this.isTmdbId(subjectId)) {
       const r = await this.resolveTmdb(subjectId);
-      // Pas de correspondance MovieBox : détail vide PROPRE (l'app utilise
-      // /catalog/detail pour les métadonnées TMDB de toute façon). Jamais de 500.
+      // Pas de correspondance MovieBox (pas de lecture possible) : on renvoie quand
+      // même les vraies métadonnées TMDB (titre/poster/synopsis/cast) plutôt qu'une
+      // fiche vide, pour ne pas écraser côté app le fallback déjà affiché (infos de
+      // la liste cliquée) par des champs blancs. Jamais de 500.
       if (!r) {
-        const [, type] = subjectId.split(':');
+        const [, type, idStr] = subjectId.split(':');
+        const tmdbType = (type as TmdbMediaType) || 'movie';
+        const id = parseInt(idStr);
+        let meta: Partial<DetailResult> = {};
+        try {
+          const detail = await tmdbDetail(tmdbType, id);
+          if (detail?.title) {
+            meta = {
+              title: detail.title, posterUrl: detail.posterUrl, coverUrl: detail.coverUrl,
+              plot: detail.plot, genres: detail.genres, rating: detail.rating, year: detail.year,
+              duration: detail.duration, country: detail.country, cast: detail.cast,
+            };
+          }
+        } catch (e: any) {
+          logger.warn(`Détail TMDB de secours "${subjectId}" échoué: ${e?.message || e}`);
+        }
         return {
           data: {
             subjectId, detailPath: undefined, title: '', posterUrl: '',
             type: type === 'tv' ? 'series' : 'movie', dubs: [], freeEpisodes: 0,
+            ...meta,
           } as DetailResult,
-          source: 'none',
+          source: meta.title ? 'tmdb' : 'none',
         };
       }
       const result = await this.execute('detail', (s) => s.detail(r.subjectId), `detail(${r.subjectId})`);
@@ -210,7 +229,30 @@ export class ScraperEngine {
         source: result.source,
       };
     }
-    return this.execute('detail', (s) => s.detail(subjectId), `detail(${subjectId})`);
+    const result = await this.execute('detail', (s) => s.detail(subjectId), `detail(${subjectId})`);
+    // Synopsis/casting MovieBox natif souvent absents ou pauvres (staffList/description
+    // vides côté upstream) : on comble uniquement les trous via TMDB (recherche par
+    // titre+année), sans jamais écraser une valeur MovieBox déjà présente. Best-effort :
+    // en cas d'échec (pas de match TMDB, API indisponible), on garde le détail MovieBox
+    // tel quel plutôt que de faire échouer toute la fiche.
+    if (!result.data.plot || !result.data.cast?.length) {
+      try {
+        const enriched = await enrichWithTmdb(
+          result.data.title,
+          result.data.type === 'series' ? 'series' : 'movie',
+          result.data.year
+        );
+        if (enriched) {
+          result.data.plot = result.data.plot || enriched.overview || result.data.plot;
+          result.data.cast = result.data.cast?.length ? result.data.cast : enriched.cast;
+          result.data.genres = result.data.genres?.length ? result.data.genres : enriched.genres;
+          result.data.rating = result.data.rating || (enriched.voteAverage ? String(enriched.voteAverage) : result.data.rating);
+        }
+      } catch (e: any) {
+        logger.warn(`Enrichissement TMDB détail natif "${result.data.title}" échoué: ${e?.message || e}`);
+      }
+    }
+    return result;
   }
 
   async stream(subjectId: string, season?: number, episode?: number, detailPath?: string): Promise<{ data: StreamResult; source: string }> {
