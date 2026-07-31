@@ -254,6 +254,10 @@ router.get('/catalog/genres', cacheMiddleware('home'), wrapAsync(async (req, res
  *         name: sort
  *         schema: { type: string }
  *       - in: query
+ *         name: language
+ *         schema: { type: string }
+ *         description: Filtre optionnel sur la langue ORIGINALE (ISO 639-1) — pas une garantie VF
+ *       - in: query
  *         name: page
  *         schema: { type: integer, default: 1 }
  */
@@ -265,10 +269,11 @@ router.get('/catalog/discover', cacheMiddleware('home'), wrapAsync(async (req, r
   const year = req.query.year ? parseInt(req.query.year as string) : undefined;
   const country = (req.query.country as string) || undefined;
   const sort = (req.query.sort as string) || undefined;
+  const language = (req.query.language as string) || undefined;
 
   const data = req.query.trending !== undefined
     ? await tmdbTrending(type, page)
-    : await tmdbDiscover({ type, page, genre, year, country, sort });
+    : await tmdbDiscover({ type, page, genre, year, country, sort, language });
 
   res.json({
     success: true,

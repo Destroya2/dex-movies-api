@@ -142,6 +142,12 @@ export interface DiscoverParams {
   country?: string;      // code ISO 3166-1 (ex: FR, US)
   year?: number;
   sort?: string;         // ex: popularity.desc, vote_average.desc, primary_release_date.desc
+  // Langue ORIGINALE (ISO 639-1, ex: fr/en/hi) — PAS une garantie de doublage VF,
+  // juste un filtre optionnel pour parcourir le catalogue par langue de tournage.
+  // Ne jamais appliquer par défaut : un film hollywoodien doublé en VF a
+  // original_language=en, un filtre auto sur "fr" masquerait tout le contenu
+  // VF doublé, contraire au but de l'app.
+  language?: string;
 }
 
 /** Découverte paginée : le cœur du catalogue infini (filtrable). */
@@ -156,6 +162,7 @@ export async function tmdbDiscover(p: DiscoverParams): Promise<{ items: any[]; p
     'vote_count.gte': 30, // évite le bruit sans votes
   };
   if (p.country) params.with_origin_country = p.country;
+  if (p.language) params.with_original_language = p.language;
   if (year) {
     if (p.type === 'movie') params.primary_release_year = year;
     else params.first_air_date_year = year;
