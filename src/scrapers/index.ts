@@ -1,8 +1,6 @@
 import { Scraper, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult, RecommendResult, DownloadResult } from './base';
 import { MovieBoxMobileScraper } from './moviebox/index';
 import { MovieBoxH5Scraper } from './fallback/h5api';
-import { FlixHQScraper } from './flixhq';
-import { VidLinkScraper } from './vidlink';
 import { tmdbDetail, TmdbMediaType } from '../utils/tmdbCatalog';
 import { bestMatch } from '../utils/titleMatch';
 import { fallbackStream } from '../utils/streamFallback';
@@ -14,6 +12,15 @@ type ScraperMethod = 'home' | 'search' | 'suggest' | 'detail' | 'stream' | 'cate
 interface ResolvedTmdb {
   subjectId: string;      // subjectId MovieBox réel
   detailPath?: string;    // slug MovieBox
+  // Métadonnées TMDB déjà récupérées pendant la résolution : on les réutilise
+  // pour écraser titre/poster/cover côté détail (voir detail() plus bas), afin
+  // que l'écran de détail affiche TOUJOURS le même titre/visuel que la fiche
+  // catalogue sur laquelle l'utilisateur a cliqué, même quand le matching de
+  // titre a trouvé une édition MovieBox différente (doublon, autre film proche).
+  tmdbMeta: {
+    title: string; posterUrl: string; coverUrl?: string; plot?: string;
+    genres?: string[]; rating?: string; year?: string; duration?: string; country?: string; cast?: string[];
+  };
 }
 
 // Un scraper peut répondre 200 avec des données vides (échec silencieux upstream).
@@ -35,13 +42,11 @@ export class ScraperEngine {
   constructor() {
     // H5 = scraper primaire (tout le catalogue VF).
     this.register(new MovieBoxH5Scraper());
-    // VidLink : streams par TMDB ID (best-effort).
-    this.register(new VidLinkScraper());
-    // FlixHQ (Consumet) et Mobile HMAC sont BLOQUÉS sur Vercel (Cloudflare / IP) :
-    // en prod ils n'apportent rien et ajoutent ~25 s de latence par appel qui
-    // échoue (risque de 504). On ne les enregistre qu'en local via un flag.
+    // Mobile HMAC (scraper MovieBox original, un des 3 hacks vitaux du projet —
+    // voir REGLES.md) est BLOQUÉ sur Vercel (Cloudflare / IP) : en prod il
+    // n'apporte rien et ajoute de la latence pour un appel qui échoue. On ne
+    // l'enregistre qu'en local via un flag, mais on NE LE SUPPRIME PAS.
     if (process.env.ENABLE_BLOCKED_SCRAPERS === '1') {
-      this.register(new FlixHQScraper());
       this.register(new MovieBoxMobileScraper());
     }
   }
@@ -125,7 +130,15 @@ export class ScraperEngine {
         const match = bestMatch(detail.title, detail.year, candidates)
           || (detail.originalTitle ? bestMatch(detail.originalTitle, detail.year, candidates) : null);
         if (match) {
-          resolved = { subjectId: match.item.subjectId, detailPath: match.item.detailPath };
+          resolved = {
+            subjectId: match.item.subjectId,
+            detailPath: match.item.detailPath,
+            tmdbMeta: {
+              title: detail.title, posterUrl: detail.posterUrl, coverUrl: detail.coverUrl,
+              plot: detail.plot, genres: detail.genres, rating: detail.rating, year: detail.year,
+              duration: detail.duration, country: detail.country, cast: detail.cast,
+            },
+          };
           logger.info(`Bridge TMDB ${subjectId} ("${detail.title}") → MovieBox ${match.item.subjectId} (score ${match.score.toFixed(2)})`);
         } else {
           logger.warn(`Bridge TMDB ${subjectId} ("${detail.title}"/"${detail.originalTitle || ''}") : aucun match MovieBox (${candidates.length} candidats)`);
@@ -168,7 +181,31 @@ export class ScraperEngine {
           source: 'none',
         };
       }
-      return this.execute('detail', (s) => s.detail(r.subjectId), `detail(${r.subjectId})`);
+      const result = await this.execute('detail', (s) => s.detail(r.subjectId), `detail(${r.subjectId})`);
+      // Le matching de titre peut trouver une édition MovieBox proche mais pas
+      // identique (doublon, remake, "Director's Cut"...) : on garde ses données
+      // de streaming (dubs, seasons, freeEpisodes) mais on force l'affichage
+      // (titre/poster/synopsis...) sur les métadonnées TMDB exactes, celles déjà
+      // vues par l'utilisateur sur la fiche catalogue cliquée. Merge champ par
+      // champ (pas un simple spread) pour ne pas écraser une valeur MovieBox
+      // valide par un undefined TMDB (ex: pas de backdrop sur ce titre).
+      const meta = r.tmdbMeta;
+      return {
+        data: {
+          ...result.data,
+          title: meta.title ?? result.data.title,
+          posterUrl: meta.posterUrl || result.data.posterUrl,
+          coverUrl: meta.coverUrl ?? result.data.coverUrl,
+          plot: meta.plot ?? result.data.plot,
+          genres: meta.genres ?? result.data.genres,
+          rating: meta.rating ?? result.data.rating,
+          year: meta.year ?? result.data.year,
+          duration: meta.duration ?? result.data.duration,
+          country: meta.country ?? result.data.country,
+          cast: meta.cast ?? result.data.cast,
+        },
+        source: result.source,
+      };
     }
     return this.execute('detail', (s) => s.detail(subjectId), `detail(${subjectId})`);
   }

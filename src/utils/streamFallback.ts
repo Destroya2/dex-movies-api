@@ -7,7 +7,10 @@ import { logger } from '../middleware/logger';
  * avec sous-titres. Purs HTTP (compatibles Vercel), best-effort : renvoient []
  * si le site est géo/CF-bloqué depuis l'IP appelante.
  *
- * Extracteurs portés de repos/NuvioStreamsAddon/providers (vixsrc.js).
+ * vixsrc.to a été retiré (30/07/2026) : bloqué par IP/ASN Cloudflare même
+ * depuis Vercel Paris (403 dès le premier appel), jamais appelé dans la
+ * chaîne active. Voir git log pour l'extracteur si besoin de le réactiver
+ * un jour depuis une IP résidentielle.
  *
  * Recherche de providers additionnels (29/07/2026) — candidats testés et
  * écartés, pour éviter de refaire cette recherche :
@@ -38,56 +41,13 @@ export interface FallbackStream {
   subtitles: { url: string; language: string }[];
 }
 
-// ─── vixsrc.to ────────────────────────────────────────────────────────────────
-async function vixsrc(tmdbId: string, type: 'movie' | 'tv', season?: number, episode?: number): Promise<FallbackStream> {
-  const page = type === 'movie'
-    ? `https://vixsrc.to/movie/${tmdbId}`
-    : `https://vixsrc.to/tv/${tmdbId}/${season}/${episode}`;
-  try {
-    const resp = await request(page, {
-      headers: { 'User-Agent': UA, 'Referer': 'https://vixsrc.to/', 'Accept': 'text/html,application/xhtml+xml' },
-      timeout: 15000,
-    });
-    if (resp.status !== 200) return { sources: [], subtitles: [] };
-    const html = resp.body;
-
-    let master: string | null = null;
-    // Méthode 1 : window.masterPlaylist { url, token, expires }
-    if (html.includes('masterPlaylist')) {
-      const urlM = html.match(/url:\s*['"]([^'"]+)['"]/);
-      const tokM = html.match(/['"]?token['"]?\s*:\s*['"]([^'"]+)['"]/);
-      const expM = html.match(/['"]?expires['"]?\s*:\s*['"]?(\d+)/);
-      if (urlM && tokM && expM) {
-        const base = urlM[1];
-        const sep = base.includes('?') ? '&' : '?';
-        master = `${base}${sep}token=${tokM[1]}&expires=${expM[1]}&h=1&lang=fr`;
-      }
-    }
-    // Méthode 2 : .m3u8 direct
-    if (!master) {
-      const m = html.match(/https?:\/\/[^'"\s]+\.m3u8[^'"\s]*/);
-      if (m) master = m[0];
-    }
-    if (!master) return { sources: [], subtitles: [] };
-
-    // Sous-titres via wyzie (multi-langue, dont français quand dispo)
-    const subtitles = await wyzieSubs(tmdbId, season, episode);
-    return {
-      sources: [{ url: master, format: 'HLS', quality: 1080, codec: 'h264' }],
-      subtitles,
-    };
-  } catch {
-    return { sources: [], subtitles: [] };
-  }
-}
-
 // ─── vidcore.org (hébergé, pré-proxifié) ──────────────────────────────────────
-// Contrairement à vixsrc (mis de côté pour l'instant, bloqué par IP/ASN même
-// depuis Vercel), vidcore.org relaie déjà les flux via SES PROPRES proxies
-// Cloudflare Workers (vidrift.pages.dev, embed.anicine.workers.dev) : c'est
-// LEUR infrastructure qui absorbe le géo/ASN-blocking, pas la nôtre. Vérifié
-// fonctionnel depuis Vercel (Paris) ET depuis une IP résidentielle. Limite
-// connue : VO uniquement (aucun paramètre de langue n'a d'effet, pas de VF).
+// vidcore.org relaie déjà les flux via SES PROPRES proxies Cloudflare Workers
+// (vidrift.pages.dev, embed.anicine.workers.dev) : c'est LEUR infrastructure
+// qui absorbe le géo/ASN-blocking, pas la nôtre. Vérifié fonctionnel depuis
+// Vercel (Paris) ET depuis une IP résidentielle. Limite connue : VO uniquement
+// (aucun paramètre de langue n'a d'effet, pas de VF) — sous-titres wyzie.ru
+// ajoutés en complément pour au moins proposer du VOSTFR.
 async function vidcore(tmdbId: string, type: 'movie' | 'tv', season?: number, episode?: number): Promise<FallbackStream> {
   try {
     const qs = type === 'tv'
@@ -107,7 +67,10 @@ async function vidcore(tmdbId: string, type: 'movie' | 'tv', season?: number, ep
         if (s?.url) sources.push({ url: s.url, format: 'HLS', quality: 1080 });
       } catch {}
     }
-    return { sources, subtitles: [] };
+    if (sources.length === 0) return { sources: [], subtitles: [] };
+
+    const subtitles = await wyzieSubs(tmdbId, season, episode);
+    return { sources, subtitles };
   } catch {
     return { sources: [], subtitles: [] };
   }
@@ -191,8 +154,6 @@ async function piResolver(
  * Tente les providers de secours jusqu'à obtenir des sources, VF avant VO :
  * 1) le resolver Pi (Frembed VF via navigateur) si Bastien est en ligne,
  * 2) vidcore.org (VO, hébergé et fiable, ne dépend d'aucune IP à nous).
- * vixsrc est mis de côté (bloqué par IP/ASN même depuis Vercel — voir vixsrc()
- * plus haut, conservée pour référence/réactivation future).
  * Retourne { sources: [] } si tout échoue.
  */
 export async function fallbackStream(
