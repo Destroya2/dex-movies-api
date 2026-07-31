@@ -32,6 +32,19 @@ import { logger } from '../middleware/logger';
  *   (db.speedracelight.com) dont le protocole n'est pas documenté.
  * Conclusion : aucun n'est intégrable sans effort de rétro-ingénierie
  * comparable à celui déjà investi sur le resolver Pi, pour un gain incertain.
+ *
+ * CinePro Core (30/07/2026, github.com/cinepro-org/core) — agrégateur
+ * auto-hébergeable de 14 providers (FshareTV, Icefy, VixSrc, VidZee...) sous
+ * une API HTTP unique. Testé en LOCAL avec succès réel : source MP4 valide de
+ * 963 Mo, Range requests OK, lecture confirmée (`/v1/movies/414906`). Mais
+ * uniquement VO sur ce test (org/eng/ita, pas de FR), et le déploiement
+ * Vercel a échoué : FUNCTION_INVOCATION_FAILED — le serveur (OMSS framework)
+ * appelle `server.start()` façon process Node persistant (`.listen()`), pas
+ * un handler serverless exportable, donc incompatible avec le modèle Vercel
+ * malgré le bouton "Deploy with Vercel" de leur README. Cible plus adaptée :
+ * Render (process persistant supporté) ou le Pi une fois l'accès SSH rétabli.
+ * Code laissé de côté pour l'instant — pas intégré, projet de test Vercel
+ * supprimé après l'échec.
  */
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36';
