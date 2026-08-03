@@ -16,6 +16,8 @@ export interface TmdbResult {
   cast?: string[];
   runtime?: number;
   imdbId?: string;
+  // Clé vidéo YouTube de la bande-annonce (best-effort, sinon undefined).
+  trailerKey?: string;
 }
 
 function searchQuery(title: string): string {
@@ -23,6 +25,12 @@ function searchQuery(title: string): string {
     .replace(/\[.*?\]/g, '')
     .replace(/\(.*?\)/g, '')
     .replace(/[VF]|VOSTFR|Version\s*[Ff]rançaise/g, '')
+    // Plages de saisons que MovieBox ajoute au titre ("S1-S3", "S01-S03",
+    // "Saison 1", "Saison 1-3") : sans elles, le matching TMDB échoue
+    // ("Spider-Man S1-S3" → 0 résultat TMDB, vérifié).
+    .replace(/\bS\d{1,2}(-S?\d{1,2})?\b/gi, '')
+    .replace(/\bSaisons?\s*\d+\s*(-\s*\d+)?\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
     .trim();
 }
 
@@ -47,13 +55,19 @@ export async function enrichWithTmdb(
     const first = results[0];
     const id = first.id;
 
-    const detailUrl = `${TMDB_BASE}/${type === 'series' ? 'tv' : 'movie'}/${id}?api_key=${TMDB_API_KEY}&language=fr-FR&append_to_response=credits,external_ids`;
+    const detailUrl = `${TMDB_BASE}/${type === 'series' ? 'tv' : 'movie'}/${id}?api_key=${TMDB_API_KEY}&language=fr-FR&append_to_response=credits,external_ids,videos`;
     const detailResp = await request(detailUrl);
     if (detailResp.status !== 200) return null;
 
     const detail = await detailResp.json();
 
     const cast = (detail.credits?.cast || []).slice(0, 10).map((c: any) => c.name).filter(Boolean);
+
+    // Bande-annonce YouTube : officielle en priorité, sinon la première vidéo.
+    const videos = (detail.videos?.results || []) as any[];
+    const trailer = videos.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
+      || videos.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer')
+      || videos.find((v: any) => v.site === 'YouTube');
 
     return {
       title: detail.title || detail.name || first.title,
@@ -66,6 +80,7 @@ export async function enrichWithTmdb(
       cast: cast.length > 0 ? cast : undefined,
       runtime: detail.runtime || detail.episode_run_time?.[0],
       imdbId: detail.external_ids?.imdb_id,
+      trailerKey: trailer?.key,
     };
   } catch (err) {
     logger.warn(`TMDB enrichment failed for "${title}": ${(err as Error).message}`);

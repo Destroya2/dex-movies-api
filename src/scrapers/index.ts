@@ -22,6 +22,7 @@ interface ResolvedTmdb {
   tmdbMeta: {
     title: string; posterUrl: string; coverUrl?: string; plot?: string;
     genres?: string[]; rating?: string; year?: string; duration?: string; country?: string; cast?: string[];
+    trailerKey?: string;
   };
 }
 
@@ -149,6 +150,7 @@ export class ScraperEngine {
               title: detail.title, posterUrl: detail.posterUrl, coverUrl: detail.coverUrl,
               plot: detail.plot, genres: detail.genres, rating: detail.rating, year: detail.year,
               duration: detail.duration, country: detail.country, cast: detail.cast,
+              trailerKey: detail.trailerKey,
             },
           };
           logger.info(`Bridge TMDB ${subjectId} ("${detail.title}") → MovieBox ${match.item.subjectId} (score ${match.score.toFixed(2)})`);
@@ -229,6 +231,7 @@ export class ScraperEngine {
               title: detail.title, posterUrl: detail.posterUrl, coverUrl: detail.coverUrl,
               plot: detail.plot, genres: detail.genres, rating: detail.rating, year: detail.year,
               duration: detail.duration, country: detail.country, cast: detail.cast,
+              trailerKey: detail.trailerKey,
             };
           }
         } catch (e: any) {
@@ -265,6 +268,7 @@ export class ScraperEngine {
           duration: meta.duration ?? result.data.duration,
           country: meta.country ?? result.data.country,
           cast: meta.cast ?? result.data.cast,
+          trailerKey: meta.trailerKey ?? result.data.trailerKey,
         },
         source: result.source,
       };
@@ -272,10 +276,12 @@ export class ScraperEngine {
     const result = await this.execute('detail', (s) => s.detail(subjectId), `detail(${subjectId})`);
     // Synopsis/casting MovieBox natif souvent absents ou pauvres (staffList/description
     // vides côté upstream) : on comble uniquement les trous via TMDB (recherche par
-    // titre+année), sans jamais écraser une valeur MovieBox déjà présente. Best-effort :
-    // en cas d'échec (pas de match TMDB, API indisponible), on garde le détail MovieBox
-    // tel quel plutôt que de faire échouer toute la fiche.
-    if (!result.data.plot || !result.data.cast?.length) {
+    // titre+année), sans jamais écraser une valeur MovieBox déjà présente. La bande-
+    // annonce (trailerKey) n'existe JAMAIS côté upstream h5 → on enrichit aussi quand
+    // elle manque, pour que la fiche puisse afficher le player de bande-annonce.
+    // Best-effort : en cas d'échec (pas de match TMDB, API indisponible), on garde le
+    // détail MovieBox tel quel plutôt que de faire échouer toute la fiche.
+    if (!result.data.plot || !result.data.cast?.length || !result.data.trailerKey) {
       try {
         const enriched = await enrichWithTmdb(
           result.data.title,
@@ -287,6 +293,7 @@ export class ScraperEngine {
           result.data.cast = result.data.cast?.length ? result.data.cast : enriched.cast;
           result.data.genres = result.data.genres?.length ? result.data.genres : enriched.genres;
           result.data.rating = result.data.rating || (enriched.voteAverage ? String(enriched.voteAverage) : result.data.rating);
+          result.data.trailerKey = result.data.trailerKey || enriched.trailerKey;
         }
       } catch (e: any) {
         logger.warn(`Enrichissement TMDB détail natif "${result.data.title}" échoué: ${e?.message || e}`);

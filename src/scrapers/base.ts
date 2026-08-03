@@ -42,6 +42,8 @@ export interface DetailResult {
   language?: string;
   isFrench?: boolean;
   subtitleLangs?: string;
+  // Clé vidéo YouTube de la bande-annonce (enrichissement TMDB, best-effort).
+  trailerKey?: string;
 }
 
 export interface StreamResult {
