@@ -237,6 +237,108 @@ export async function tmdbDetail(type: TmdbMediaType, id: number): Promise<any |
   }
 }
 
+// ─── Épisodes d'une saison ────────────────────────────────────────────────────
+
+export interface TmdbEpisodeInfo {
+  episode: number;
+  title?: string;
+  plot?: string;
+  stillUrl?: string;
+  airDate?: string;
+  runtime?: number;
+}
+
+/**
+ * Titres/synopsis/vignettes des épisodes d'une saison.
+ *
+ * L'upstream MovieBox n'expose QUE le numéro d'épisode (`maxEp` par saison) —
+ * c'est pour ça que la roadmap notait les titres d'épisodes comme impossibles.
+ * TMDB les fournit, et le pont TMDB↔MovieBox existe déjà : cet appel est le
+ * chaînon manquant.
+ */
+export async function tmdbSeasonEpisodes(id: number, season: number): Promise<TmdbEpisodeInfo[]> {
+  try {
+    const data = await tmdbGet(`/tv/${id}/season/${season}`);
+    return (data.episodes || [])
+      .map((e: any) => ({
+        episode: e.episode_number,
+        // TMDB retourne « Épisode 3 » quand le vrai titre est inconnu : inutile
+        // à afficher, l'app le compose déjà elle-même.
+        title: e.name && !/^épisode\s*\d+$/i.test(e.name) && !/^episode\s*\d+$/i.test(e.name)
+          ? e.name : undefined,
+        plot: e.overview || undefined,
+        stillUrl: e.still_path ? `${IMG}/w300${e.still_path}` : undefined,
+        airDate: e.air_date || undefined,
+        runtime: e.runtime || undefined,
+      }))
+      .filter((e: TmdbEpisodeInfo) => Number.isFinite(e.episode));
+  } catch (e) {
+    logger.warn(`TMDB season failed (tv/${id}/season/${season}): ${(e as Error).message}`);
+    return [];
+  }
+}
+
+/**
+ * Retrouve l'id TMDB d'une série à partir de son titre MovieBox (pont inverse,
+ * pour les fiches natives qui n'ont pas d'id `tmdb:`). Best-effort : null si
+ * aucun résultat.
+ */
+export async function tmdbFindTvId(title: string, expectedEpisodes?: number): Promise<number | null> {
+  const q = title
+    .replace(/\[.*?\]/g, '')
+    .replace(/\(.*?\)/g, '')
+    .replace(/\bS\d{1,2}(-S?\d{1,2})?\b/gi, '')
+    .replace(/\bSaisons?\s*\d+\s*(-\s*\d+)?\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (q.length < 2) return null;
+  try {
+    // ⚠️ On N'UTILISE PAS l'année MovieBox comme filtre : c'est celle de la
+    // dernière mise en ligne, pas de la première diffusion (One Piece = 2024
+    // côté MovieBox, 1999 côté TMDB). Filtrer dessus élimine les séries longues,
+    // ou pire, fait tomber sur un remake récent (le live-action One Piece 2023
+    // au lieu de l'animé) et on afficherait des titres d'épisodes faux.
+    const data = await tmdbGet('/search/tv', { query: q });
+    const results = (data.results || []) as any[];
+    if (!results.length) return null;
+    const norm = (s: string) =>
+      s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
+    const target = norm(q);
+    // Titre exactement identique en priorité (TMDB trie déjà par pertinence /
+    // popularité, donc le premier de ces candidats est le plus connu).
+    const exact = results.filter(
+      (r) => norm(r.name || '') === target || norm(r.original_name || '') === target
+    );
+    const shortlist = (exact.length ? exact : results).slice(0, 3);
+
+    // Homonymes exacts (l'animé « One Piece » et son live-action portent le même
+    // nom) : on départage par le NOMBRE D'ÉPISODES annoncé par MovieBox. Sans ce
+    // garde-fou on afficherait les titres du remake sur la série d'origine.
+    if (shortlist.length > 1 && expectedEpisodes && expectedEpisodes > 0) {
+      const counts = await Promise.all(
+        shortlist.map(async (r) => {
+          try {
+            const d = await tmdbGet(`/tv/${r.id}`);
+            return { id: r.id, episodes: d.number_of_episodes || 0 };
+          } catch {
+            return { id: r.id, episodes: 0 };
+          }
+        })
+      );
+      const best = counts
+        .filter((c) => c.episodes > 0)
+        .sort((a, b) =>
+          Math.abs(a.episodes - expectedEpisodes) - Math.abs(b.episodes - expectedEpisodes)
+        )[0];
+      if (best) return best.id;
+    }
+    return shortlist[0]?.id ?? null;
+  } catch (e) {
+    logger.warn(`TMDB find tv failed ("${title}"): ${(e as Error).message}`);
+    return null;
+  }
+}
+
 /**
  * Titres similaires (TMDB natif, /similar) — distinct des recommandations
  * MovieBox (ScraperEngine.recommendations, qui ne marche que pour un

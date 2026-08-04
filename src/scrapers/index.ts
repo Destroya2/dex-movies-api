@@ -1,7 +1,10 @@
 import { Scraper, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult, RecommendResult, DownloadResult } from './base';
 import { MovieBoxMobileScraper } from './moviebox/index';
 import { MovieBoxH5Scraper } from './fallback/h5api';
-import { tmdbDetail, tmdbSearch, isTmdbEnabled, TmdbMediaType } from '../utils/tmdbCatalog';
+import {
+  tmdbDetail, tmdbSearch, isTmdbEnabled, TmdbMediaType,
+  tmdbSeasonEpisodes, tmdbFindTvId, TmdbEpisodeInfo,
+} from '../utils/tmdbCatalog';
 import { enrichWithTmdb } from '../utils/tmdb';
 import { bestMatch } from '../utils/titleMatch';
 import { fallbackStream } from '../utils/streamFallback';
@@ -354,6 +357,55 @@ export class ScraperEngine {
       } catch {}
     }
     return { data: { items: [], page, hasMore: false }, source: 'none' };
+  }
+
+  // Pont INVERSE (sujet MovieBox natif → id TMDB série), pour les fiches qui
+  // n'ont pas d'id `tmdb:`. Mémorisé : un même titre est rouvert souvent.
+  private tvIdCache = new Map<string, number | null>();
+
+  /**
+   * Épisodes d'une saison enrichis par TMDB (titre, synopsis, vignette, durée).
+   * L'upstream MovieBox ne donne que le NOMBRE d'épisodes par saison — tout le
+   * reste vient de TMDB. Best-effort : liste vide si le titre n'est pas
+   * identifiable côté TMDB, l'app retombe alors sur « Épisode N ».
+   */
+  async episodes(
+    subjectId: string,
+    season: number
+  ): Promise<{ data: { season: number; episodes: TmdbEpisodeInfo[] }; source: string }> {
+    const empty = { data: { season, episodes: [] as TmdbEpisodeInfo[] }, source: 'none' };
+    if (!isTmdbEnabled()) return empty;
+
+    let tvId: number | null = null;
+    if (this.isTmdbId(subjectId)) {
+      const [, type, idStr] = subjectId.split(':');
+      if (type !== 'tv') return empty;
+      tvId = parseInt(idStr) || null;
+    } else if (this.tvIdCache.has(subjectId)) {
+      tvId = this.tvIdCache.get(subjectId)!;
+    } else {
+      try {
+        const { data } = await this.detail(subjectId);
+        if (data.type === 'series' && data.title) {
+          // Nombre total d'épisodes annoncé par MovieBox : sert à départager
+          // les homonymes TMDB (série d'origine vs remake/live-action).
+          const totalEpisodes = (data.seasons || [])
+            .reduce((sum: number, s: any) => sum + (Number(s.maxEpisodes) || 0), 0);
+          tvId = await tmdbFindTvId(data.title, totalEpisodes || undefined);
+        }
+      } catch (e: any) {
+        logger.warn(`Épisodes: détail ${subjectId} indisponible (${e?.message || e})`);
+      }
+      this.tvIdCache.set(subjectId, tvId);
+      if (this.tvIdCache.size > 500) this.tvIdCache.clear();
+    }
+
+    if (!tvId) return empty;
+    const episodes = await tmdbSeasonEpisodes(tvId, season);
+    return {
+      data: { season, episodes },
+      source: episodes.length ? 'tmdb' : 'none',
+    };
   }
 
   /** Fichiers téléchargeables — premier scraper qui implémente la méthode. */

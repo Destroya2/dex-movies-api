@@ -365,6 +365,42 @@ router.get('/recommend/:subjectId', cacheMiddleware('home'), wrapAsync(async (re
 
 /**
  * @openapi
+ * /api/dex/episodes/{subjectId}:
+ *   get:
+ *     tags: [Content]
+ *     summary: Épisodes d'une saison (titres/synopsis/vignettes via TMDB)
+ *     parameters:
+ *       - in: path
+ *         name: subjectId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: season
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *     responses:
+ *       200:
+ *         description: Episode list (empty if the title cannot be matched on TMDB)
+ */
+// Métadonnées d'épisodes = stables dans le temps → cache long, contrairement
+// aux URLs de flux. Jamais d'erreur : liste vide si TMDB ne connaît pas le titre.
+router.get('/episodes/:subjectId', cacheMiddleware('detail'), wrapAsync(async (req, res) => {
+  const subjectId = req.params.subjectId as string;
+  checkLen(subjectId, 'subjectId');
+  if (!subjectId) throw new AppError(400, 'MISSING_ID', 'subjectId is required');
+  const season = parseInt((req.query.season ?? req.query.se) as string) || 1;
+  const { data, source } = await scraper.episodes(subjectId, season);
+  res.json({
+    success: true,
+    data,
+    meta: { source, cached: false, timestamp: Date.now() },
+  });
+}));
+
+/**
+ * @openapi
  * /api/dex/download/{subjectId}:
  *   get:
  *     tags: [Stream]
