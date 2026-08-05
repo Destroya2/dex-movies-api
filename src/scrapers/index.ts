@@ -10,6 +10,7 @@ import { bestMatch } from '../utils/titleMatch';
 import { fallbackStream } from '../utils/streamFallback';
 import { StreamRequest } from '../providers/types';
 import { resolveStream, defaultDeadline } from '../providers/registry';
+import { searchCatalog, CatalogProvider } from '../providers/catalogRegistry';
 import { createMovieBoxProvider, piResolverProvider, vidcoreProvider } from '../providers/streamProviders';
 import { logger } from '../middleware/logger';
 import { recordBridgeResult } from '../middleware/metrics';
@@ -178,37 +179,43 @@ export class ScraperEngine {
     return this.execute('home', (s) => s.home(), 'home');
   }
 
+  /**
+   * Recherche multi-source. Les sources sont COMPLÉMENTAIRES (on veut tout ce
+   * que chacune sait), pas alternatives — elles sont donc interrogées **en
+   * parallèle** par `catalogRegistry`. Avant, MovieBox puis TMDB en séquentiel :
+   * leurs latences s'additionnaient sur la route déjà la plus lente du service.
+   * Une source en panne dégrade désormais le résultat au lieu de le faire échouer.
+   */
   async search(query: string, page: number = 1): Promise<{ data: SearchResult; source: string }> {
-    // 1) MovieBox (scraper primaire) : résultats natifs en tête, badges VF fiables.
-    const moviebox = await this.execute('search', (s) => s.search(query, page), `search(${query})`);
-    const mbItems = (moviebox.data.items || []).map((i: any) => ({ ...i, source: 'moviebox' }));
-    const mbIds = new Set(mbItems.map((i: any) => i.subjectId));
+    const movieboxProvider: CatalogProvider = {
+      name: 'moviebox',
+      priority: 10, // en tête : badges VF fiables, seuls items réellement lisibles
+      supports: () => true,
+      search: async (q, p) => {
+        const r = await this.execute('search', (s) => s.search(q, p), `search(${q})`);
+        return (r.data.items || []).map((i: any) => ({ ...i, source: 'moviebox' }));
+      },
+    };
 
-    // 2) TMDB en complément (catalogue quasi-infini) : couvre les titres absents
-    //    ou cassés côté MovieBox. Best-effort : si TMDB échoue, on garde les
-    //    résultats MovieBox seuls. Jamais en doublon d'un subjectId MovieBox.
-    //    ⚠️ Uniquement sur la page 1 : c'est une SECTION complémentaire (l'app
-    //    l'affiche sous « Aussi disponibles »), pas la suite de la liste
-    //    MovieBox. Sans ce garde-fou, `tmdbSearch(query, 1)` étant toujours
-    //    appelée avec la page 1, chaque page suivante réaffichait exactement
-    //    les 20 mêmes titres TMDB (doublons vérifiés en prod page1 vs page2).
-    let tmdbItems: any[] = [];
-    if (isTmdbEnabled() && page === 1) {
-      try {
-        const t = await tmdbSearch(query, 1);
-        tmdbItems = t.items
-          .map((i: any) => ({ ...i, source: 'tmdb' }))
-          .filter((i: any) => !mbIds.has(i.subjectId))
-          .slice(0, 20);
-      } catch (e: any) {
-        logger.warn(`TMDB search merge failed ("${query}"): ${e?.message || e}`);
-      }
-    }
+    const tmdbProvider: CatalogProvider = {
+      name: 'tmdb',
+      priority: 20,
+      // ⚠️ Page 1 UNIQUEMENT : c'est une SECTION complémentaire (« Aussi
+      // disponibles »), pas la suite de la liste MovieBox. `tmdbSearch` étant
+      // toujours appelée avec la page 1, l'inclure au-delà réafficherait
+      // exactement les 20 mêmes titres (doublons vérifiés en prod page1/page2).
+      supports: (_q, p) => isTmdbEnabled() && p === 1,
+      search: async (q) => {
+        const t = await tmdbSearch(q, 1);
+        return t.items.map((i: any) => ({ ...i, source: 'tmdb' })).slice(0, 20);
+      },
+    };
 
-    const items = [...mbItems, ...tmdbItems];
+    const { items, degraded } = await searchCatalog(query, page, [movieboxProvider, tmdbProvider]);
     return {
-      data: { items, total: (moviebox.data.total || mbItems.length) + tmdbItems.length, page },
-      source: moviebox.source,
+      data: { items, total: items.length, page },
+      // Une recherche servie sans MovieBox n'a pas la même valeur : on le dit.
+      source: degraded.includes('moviebox') ? 'degraded' : 'moviebox-h5api',
     };
   }
 

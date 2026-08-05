@@ -364,6 +364,12 @@ export class MovieBoxH5Scraper implements Scraper {
     // et on déduplique — sinon une recherche comme "spider man" n'afficherait
     // que 2 résultats sur les 38 titres réellement disponibles.
     const MAX_UPSTREAM_PAGES = 12;
+    // Budget de temps EN PLUS du plafond de pages : 12 pages × (appel + 150 ms)
+    // pouvaient dépasser 7 s en prod, sur une fonction Vercel qui coupe à 30 s.
+    // Quand l'upstream ralentit, mieux vaut rendre 25 résultats tout de suite
+    // que 38 après un timeout. On s'arrête donc au premier des deux plafonds.
+    const SEARCH_BUDGET_MS = 8_000;
+    const startedAt = Date.now();
     const seen = new Map<string, any>();
     let total = 0;
 
@@ -394,6 +400,10 @@ export class MovieBoxH5Scraper implements Scraper {
 
         const hasMore = inner.pager?.hasMore === true;
         if (!hasMore || p >= MAX_UPSTREAM_PAGES) break;
+        if (Date.now() - startedAt > SEARCH_BUDGET_MS) {
+          logger.warn(`Recherche "${query}" : budget de ${SEARCH_BUDGET_MS}ms atteint après ${p} page(s), ${seen.size} résultat(s) rendus`);
+          break;
+        }
         await sleep(150); // évite de se faire bloquer par l'upstream
       }
     } catch (err) {
