@@ -7,7 +7,7 @@ import { errorHandler } from './middleware/errorHandler';
 import { metricsMiddleware, metricsHandler, metricsSnapshot } from './middleware/metrics';
 import { apiRateLimiter } from './middleware/rateLimit';
 import { cacheStats } from './middleware/cache';
-import { persistentPing } from './middleware/persistentCache';
+import { persistentPing, cacheNamespace } from './middleware/persistentCache';
 import { breakerSnapshot } from './utils/resilience';
 import { geoContextMiddleware } from './middleware/geoContext';
 import { GEO_PROFILES } from './config/geo';
@@ -70,7 +70,7 @@ export function createApp(options: { trustProxy?: boolean } = {}): Express {
       timestamp: Date.now(),
       memory: process.memoryUsage(),
       dependencies: {
-        cacheL2: redis,
+        cacheL2: { ...redis, namespace: cacheNamespace() },
         openCircuits: breakers,
       },
       cache: cacheStats(),

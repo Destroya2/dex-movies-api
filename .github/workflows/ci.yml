@@ -42,6 +42,37 @@ jobs:
         env:
           TEST_MODE: 'true'
 
+  docker:
+    name: Image Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # L'image est la porte de sortie hors Vercel (limite dure de 30 s par
+      # requête, déjà atteinte par la résolution de flux). Si elle ne construit
+      # plus, on le sait au push — pas le jour où il faut migrer en urgence.
+      - name: Construire l'image
+        run: docker build -t dex-api:ci .
+
+      - name: Vérifier que l'application démarre
+        run: |
+          docker run -d --name dex-ci -p 3000:3000 -e NODE_ENV=production dex-api:ci
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:3000/health > /dev/null; then
+              echo "L'API répond"
+              curl -s http://localhost:3000/health | head -c 200
+              docker rm -f dex-ci > /dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::L'image démarre mais /health ne répond pas"
+          docker logs dex-ci
+          docker rm -f dex-ci > /dev/null
+          exit 1
+
   secrets:
     name: Aucun secret committé
     runs-on: ubuntu-latest

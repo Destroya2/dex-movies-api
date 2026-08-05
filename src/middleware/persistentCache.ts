@@ -42,43 +42,69 @@ if (UPSTASH_URL && UPSTASH_TOKEN) {
 
 const memFallback = new NodeCache({ stdTTL: 1800 });
 
+/**
+ * Cloisonnement par environnement.
+ *
+ * Les déploiements de PRÉVISUALISATION Vercel partagent la même base Redis que
+ * la PRODUCTION (mêmes variables `KV_REST_API_*`, portée « Production, Preview »).
+ * Sans préfixe, une branche expérimentale écrit dans les clés de la prod : une
+ * réponse erronée testée en preview serait servie aux vrais utilisateurs, et les
+ * deux environnements s'évincent mutuellement du cache.
+ *
+ * `VERCEL_ENV` vaut `production`, `preview` ou `development`.
+ */
+const ENV_NAMESPACE = process.env.VERCEL_ENV || process.env.NODE_ENV || 'development';
+
+function scoped(key: string): string {
+  return `${ENV_NAMESPACE}:${key}`;
+}
+
 export async function persistentGet<T>(key: string): Promise<T | undefined> {
+  const k = scoped(key);
   if (redis) {
     try {
-      const val = await redis.get(key);
+      const val = await redis.get(k);
       if (val != null) return val as T;
     } catch { /* fallback */ }
   }
-  return memFallback.get<T>(key);
+  return memFallback.get<T>(k);
 }
 
 export async function persistentSet<T>(key: string, val: T, ttlSec = 1800): Promise<void> {
+  const k = scoped(key);
   if (redis) {
     try {
-      await redis.set(key, val, { ex: ttlSec });
+      await redis.set(k, val, { ex: ttlSec });
       return;
     } catch { /* fallback */ }
   }
-  memFallback.set(key, val, ttlSec);
+  memFallback.set(k, val, ttlSec);
 }
 
 export async function persistentDel(key: string): Promise<void> {
+  const k = scoped(key);
   if (redis) {
-    try { await redis.del(key); } catch { /* ignore */ }
+    try { await redis.del(k); } catch { /* ignore */ }
   }
-  memFallback.del(key);
+  memFallback.del(k);
 }
 
 export async function persistentKeys(pattern: string): Promise<string[]> {
+  const p = scoped(pattern);
   if (redis) {
-    try { return await redis.keys(pattern); } catch { /* fallback */ }
+    try { return await redis.keys(p); } catch { /* fallback */ }
   }
-  return memFallback.keys().filter(k => k.startsWith(pattern.replace('*', '')));
+  return memFallback.keys().filter((k) => k.startsWith(p.replace('*', '')));
 }
 
 /** Redis est-il configuré (et le client instancié) ? Exposé par /health. */
 export function isPersistentCacheEnabled(): boolean {
   return redis !== null;
+}
+
+/** Environnement dont ce process lit et écrit les clés (exposé par /health). */
+export function cacheNamespace(): string {
+  return ENV_NAMESPACE;
 }
 
 /**
@@ -90,7 +116,7 @@ export async function persistentPing(): Promise<{ enabled: boolean; reachable: b
   if (!redis) return { enabled: false, reachable: false };
   const started = Date.now();
   try {
-    const key = 'health:ping';
+    const key = scoped('health:ping');
     await redis.set(key, started, { ex: 30 });
     const back = await redis.get(key);
     return { enabled: true, reachable: back != null, latencyMs: Date.now() - started };
