@@ -47,11 +47,16 @@ export interface StreamSource {
    * meilleure définition » tombe dessus dès qu'elle dépasse l'originale — c'est
    * ce qui faisait jouer Lioness en espagnol (360p original, 480p doublé).
    *
+   * `'unknown'` = flux adaptatif (HLS/DASH) d'une fiche qui contient par
+   * ailleurs des doublages : le manifeste masque le rendu réellement servi, et
+   * c'est justement lui qui jouait l'espagnol sur `Lioness S3`.
+   *
    * Les fiches marquées `[Version française]` sont des SUJETS distincts : leur
-   * piste française est leur piste normale (`/bt/`), donc `'original'`. Ce
+   * piste française est leur piste normale (`/bt/`), et elles ne contiennent
+   * aucun `/tran-audio/` — leur flux adaptatif reste donc `'original'`. Ce
    * champ ne les dégrade pas.
    */
-  audioTrack?: 'original' | 'translated';
+  audioTrack?: 'original' | 'unknown' | 'translated';
 }
 
 export interface StreamSubtitle {

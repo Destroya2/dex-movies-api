@@ -63,7 +63,7 @@ export interface StreamSource {
   codec?: string;
   signCookie?: string;
   /** Voir providers/types.ts — 'translated' = doublage de langue inconnue. */
-  audioTrack?: 'original' | 'translated';
+  audioTrack?: 'original' | 'unknown' | 'translated';
 }
 
 export interface SubtitleTrack {

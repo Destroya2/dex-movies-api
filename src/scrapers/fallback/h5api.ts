@@ -4,7 +4,7 @@ import { Scraper, ScraperConfig, HomeResult, SearchResult, SuggestResult, Detail
 import { persistentGet, persistentSet } from '../../middleware/persistentCache';
 import { logger } from '../../middleware/logger';
 import { currentProfile, geoSpoofHeaders } from '../../config/geo';
-import { audioTrackOf, orderByAudioTrack } from '../../utils/streamSources';
+import { classifyAudioTracks, orderByAudioTrack } from '../../utils/streamSources';
 
 const UA_CHROME =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36';
@@ -655,15 +655,15 @@ export class MovieBoxH5Scraper implements Scraper {
       size: s.size ? Number(s.size) : undefined,
       duration: s.duration ? Number(s.duration) : undefined,
       codec: s.codecName || 'h264',
-      audioTrack: audioTrackOf(s.url || ''),
     })).filter((s: any) => {
       if (!s.url || seen.has(s.url)) return false;
       seen.add(s.url);
       return true;
     });
 
-    // Doublages de langue inconnue déclassés derrière les pistes d'origine.
-    const ordered = orderByAudioTrack(sources);
+    // Qualification en BLOC : le statut du flux adaptatif dépend de la présence
+    // de doublages autour de lui sur la même fiche (voir utils/streamSources).
+    const ordered = orderByAudioTrack(classifyAudioTracks(sources));
 
     // ⚠️ PAS de validation HTTP des sources ici : testée puis retirée — le CDN
     // (hakunaymatata.com) renvoie des 403 incohérents (rate-limit par IP, sign
