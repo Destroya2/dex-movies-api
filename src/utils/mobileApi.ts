@@ -64,9 +64,81 @@ const CLIENT_INFO = JSON.stringify({
 
 const TOKEN_TTL_MS = 25 * 60 * 1000;
 
+// Relais résidentiel : l'API mobile répond depuis une IP domestique mais PAS
+// depuis les IP datacenter de Vercel (vérifié en prod — aucun hôte ne délivre de
+// token invité). Le Raspberry Pi relaie donc la requête DÉJÀ SIGNÉE : la
+// signature HMAC ne dépend que de la méthode, des en-têtes et de l'URL, jamais
+// de l'IP. Sans relais configuré, on reste en appel direct (cas du dev local,
+// qui marche puisque l'IP est résidentielle).
+const RELAY_BASE = (process.env.FALLBACK_RESOLVER_URL || '').replace(/\/$/, '');
+const RELAY_TOKEN = process.env.RESOLVER_TOKEN || '';
+
 let guestToken: string | null = null;
 let tokenFetchedAt = 0;
 let activeHost: string | null = null;
+// null = pas encore tranché ; true = l'appel direct est bloqué ici, passer par
+// le relais sans perdre de temps à réessayer en direct à chaque requête.
+let useRelay: boolean | null = null;
+
+interface RawResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/** Appel direct (IP du serveur). */
+async function directCall(url: string, headers: Record<string, string>): Promise<RawResponse | null> {
+  try {
+    const resp = await request(url, { headers, timeout: 12000 });
+    return { status: resp.status, headers: resp.headers, body: resp.body };
+  } catch (e: any) {
+    logger.warn(`API mobile (direct) ${url} : ${e?.message || e}`);
+    return null;
+  }
+}
+
+/** Même appel, relayé par le Pi (IP résidentielle). */
+async function relayCall(url: string, headers: Record<string, string>): Promise<RawResponse | null> {
+  if (!RELAY_BASE) return null;
+  try {
+    const resp = await request(
+      `${RELAY_BASE}/relay${RELAY_TOKEN ? `?key=${encodeURIComponent(RELAY_TOKEN)}` : ''}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, headers }),
+        timeout: 25000,
+      }
+    );
+    if (resp.status !== 200) return null;
+    const j = JSON.parse(resp.body);
+    if (typeof j?.status !== 'number') return null;
+    return { status: j.status, headers: j.headers || {}, body: j.body || '' };
+  } catch (e: any) {
+    logger.warn(`API mobile (relais Pi) ${url} : ${e?.message || e}`);
+    return null;
+  }
+}
+
+/**
+ * Exécute l'appel par le chemin qui marche : direct si possible, relais Pi
+ * sinon. La bascule est mémorisée pour ne pas retenter le direct à chaque fois.
+ */
+async function call(url: string, headers: Record<string, string>): Promise<RawResponse | null> {
+  if (useRelay === true) return relayCall(url, headers);
+  const direct = await directCall(url, headers);
+  if (direct && direct.status !== 403 && direct.status !== 0) {
+    if (useRelay === null) useRelay = false;
+    return direct;
+  }
+  const relayed = await relayCall(url, headers);
+  if (relayed) {
+    if (!useRelay) logger.info('API mobile : appel direct bloqué, bascule sur le relais Pi');
+    useRelay = true;
+    return relayed;
+  }
+  return direct;
+}
 
 function buildHeaders(host: string, url: string, token?: string | null): Record<string, string> {
   const headers: Record<string, string> = {
@@ -102,21 +174,19 @@ async function acquireGuestToken(force = false): Promise<string | null> {
   const hosts = activeHost ? [activeHost, ...MOBILE_HOSTS.filter((h) => h !== activeHost)] : MOBILE_HOSTS;
   for (const host of hosts) {
     const url = `${host}/wefeed-mobile-bff/tab-operating?page=1&tabId=0&version=`;
+    const resp = await call(url, buildHeaders(host, url));
+    if (!resp || resp.status !== 200) continue;
+    const xUser = resp.headers['x-user'];
+    if (!xUser) continue;
     try {
-      const resp = await request(url, { headers: buildHeaders(host, url), timeout: 12000 });
-      if (resp.status !== 200) continue;
-      const xUser = resp.headers['x-user'];
-      if (!xUser) continue;
       const token = JSON.parse(String(xUser)).token;
       if (!token) continue;
       guestToken = token;
       tokenFetchedAt = Date.now();
       activeHost = host;
-      logger.info(`API mobile : token invité obtenu via ${host}`);
+      logger.info(`API mobile : token invité obtenu via ${host}${useRelay ? ' (relais Pi)' : ''}`);
       return token;
-    } catch (e: any) {
-      logger.warn(`API mobile : ${host} injoignable (${e?.message || e})`);
-    }
+    } catch { /* x-user illisible : hôte suivant */ }
   }
   return null;
 }
@@ -129,22 +199,22 @@ async function mobileGet(path: string): Promise<any | null> {
   const hosts = activeHost ? [activeHost, ...MOBILE_HOSTS.filter((h) => h !== activeHost)] : MOBILE_HOSTS;
   for (const host of hosts) {
     const url = `${host}${path}`;
-    try {
-      const resp = await request(url, { headers: buildHeaders(host, url, token), timeout: 15000 });
-      // 441 = token refusé/expiré → on en redemande un et on retente une fois.
-      if (resp.status === 441) {
-        const fresh = await acquireGuestToken(true);
-        if (!fresh) continue;
-        const retry = await request(url, { headers: buildHeaders(host, url, fresh), timeout: 15000 });
-        if (retry.status !== 200) continue;
-        return JSON.parse(retry.body);
-      }
-      if (resp.status !== 200) continue;
-      activeHost = host;
-      return JSON.parse(resp.body);
-    } catch (e: any) {
-      logger.warn(`API mobile ${path} via ${host} : ${e?.message || e}`);
+    const resp = await call(url, buildHeaders(host, url, token));
+    if (!resp) continue;
+    // 441 = token refusé/expiré → on en redemande un et on retente une fois.
+    if (resp.status === 441) {
+      const fresh = await acquireGuestToken(true);
+      if (!fresh) continue;
+      const retry = await call(url, buildHeaders(host, url, fresh));
+      if (!retry || retry.status !== 200) continue;
+      try { return JSON.parse(retry.body); } catch { continue; }
     }
+    if (resp.status !== 200) continue;
+    activeHost = host;
+    try {
+      const parsed = JSON.parse(resp.body);
+      return parsed;
+    } catch { continue; }
   }
   return null;
 }
@@ -221,7 +291,11 @@ export async function mobileVfList(
 }
 
 /** Diagnostic : l'API mobile est-elle joignable depuis cet environnement ? */
-export async function mobileApiStatus(): Promise<{ ok: boolean; host?: string }> {
+export async function mobileApiStatus(): Promise<{ ok: boolean; host?: string; via?: string }> {
   const token = await acquireGuestToken(true);
-  return { ok: Boolean(token), host: activeHost || undefined };
+  return {
+    ok: Boolean(token),
+    host: activeHost || undefined,
+    via: useRelay === true ? 'relais Pi' : useRelay === false ? 'direct' : undefined,
+  };
 }
