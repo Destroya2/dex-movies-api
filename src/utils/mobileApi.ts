@@ -172,21 +172,40 @@ async function acquireGuestToken(force = false): Promise<string | null> {
   if (!force && guestToken && Date.now() - tokenFetchedAt < TOKEN_TTL_MS) return guestToken;
 
   const hosts = activeHost ? [activeHost, ...MOBILE_HOSTS.filter((h) => h !== activeHost)] : MOBILE_HOSTS;
-  for (const host of hosts) {
-    const url = `${host}/wefeed-mobile-bff/tab-operating?page=1&tabId=0&version=`;
-    const resp = await call(url, buildHeaders(host, url));
-    if (!resp || resp.status !== 200) continue;
-    const xUser = resp.headers['x-user'];
-    if (!xUser) continue;
-    try {
-      const token = JSON.parse(String(xUser)).token;
-      if (!token) continue;
-      guestToken = token;
-      tokenFetchedAt = Date.now();
-      activeHost = host;
-      logger.info(`API mobile : token invité obtenu via ${host}${useRelay ? ' (relais Pi)' : ''}`);
-      return token;
-    } catch { /* x-user illisible : hôte suivant */ }
+
+  const tryAll = async (): Promise<string | null> => {
+    for (const host of hosts) {
+      const url = `${host}/wefeed-mobile-bff/tab-operating?page=1&tabId=0&version=`;
+      const resp = await call(url, buildHeaders(host, url));
+      if (!resp || resp.status !== 200) continue;
+      const xUser = resp.headers['x-user'];
+      if (!xUser) continue;
+      try {
+        const token = JSON.parse(String(xUser)).token;
+        if (!token) continue;
+        guestToken = token;
+        tokenFetchedAt = Date.now();
+        activeHost = host;
+        logger.info(`API mobile : token invité obtenu via ${host}${useRelay ? ' (relais Pi)' : ''}`);
+        return token;
+      } catch { /* x-user illisible : hôte suivant */ }
+    }
+    return null;
+  };
+
+  const direct = await tryAll();
+  if (direct) return direct;
+
+  // Aucun hôte n'a délivré de token en direct. Ce n'est pas forcément une erreur
+  // réseau : depuis Vercel, l'upstream répond 200 mais SANS `x-user` — il faut
+  // donc forcer la bascule sur le relais résidentiel, la détection par code
+  // d'erreur de `call()` ne suffit pas à voir ce cas.
+  if (RELAY_BASE && useRelay !== true) {
+    logger.info('API mobile : aucun token en direct, nouvelle tentative via le relais Pi');
+    useRelay = true;
+    const relayed = await tryAll();
+    if (relayed) return relayed;
+    useRelay = null; // le relais non plus : on laissera une prochaine requête retenter
   }
   return null;
 }
