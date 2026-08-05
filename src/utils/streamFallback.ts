@@ -176,6 +176,12 @@ async function piResolver(
  * 2) vidcore.org (VO, hébergé et fiable, ne dépend d'aucune IP à nous).
  * Retourne { sources: [] } si tout échoue.
  */
+/**
+ * Chaîne de repli historique, conservée pour compatibilité. La sélection des
+ * sources passe désormais par `providers/registry.ts` : l'ordre, la santé et le
+ * budget de temps y sont gérés au même endroit pour TOUTES les sources, au lieu
+ * d'être codés en dur ici.
+ */
 export async function fallbackStream(
   tmdbId: string,
   type: 'movie' | 'tv',
@@ -195,3 +201,8 @@ export async function fallbackStream(
 
   return { sources: [], subtitles: [] };
 }
+
+// Exposés individuellement pour que chaque source devienne un provider
+// autonome (voir providers/streamProviders.ts).
+export const piResolverStream = piResolver;
+export const vidcoreStream = vidcore;

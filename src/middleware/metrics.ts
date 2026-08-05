@@ -12,6 +12,11 @@ const metrics = {
   cache: {} as Record<string, { hitL1: number; hitL2: number; miss: number }>,
   // Dernier état connu de chaque disjoncteur (voir utils/resilience.ts).
   breakers: {} as Record<string, string>,
+  // Efficacité de chaque provider de flux (voir providers/registry.ts).
+  providers: {} as Record<
+    string,
+    { hit: number; empty: number; error: number; skipped: number; totalMs: number; calls: number }
+  >,
   startTime: Date.now(),
 };
 
@@ -24,6 +29,23 @@ export function recordCacheEvent(family: string, event: CacheEvent): void {
 
 export function recordBreakerState(key: string, state: string): void {
   metrics.breakers[key] = state;
+}
+
+export type ProviderResult = 'hit' | 'empty' | 'error' | 'skipped';
+
+/**
+ * Résultat de chaque provider de flux. C'est LA métrique qui dit quelle source
+ * porte réellement le service : jusqu'ici on ne savait pas si le repli Pi
+ * servait 1 % ou 40 % des lectures, ni combien il coûtait en latence.
+ */
+export function recordProviderResult(name: string, result: ProviderResult, ms: number): void {
+  const e = metrics.providers[name] ||
+    (metrics.providers[name] = { hit: 0, empty: 0, error: 0, skipped: 0, totalMs: 0, calls: 0 });
+  e[result]++;
+  if (result !== 'skipped') {
+    e.totalMs += ms;
+    e.calls++;
+  }
 }
 
 // Taux de résolution du pont TMDB→MovieBox (hit = un sujet MovieBox VF a été
@@ -87,6 +109,20 @@ export function metricsHandler(_req: Request, res: Response) {
     lines.push(`dex_cache_events_total{family="${family}",layer="miss"} ${e.miss}`);
   }
   lines.push('');
+  lines.push('# HELP dex_provider_results_total Stream provider outcomes');
+  lines.push('# TYPE dex_provider_results_total counter');
+  for (const [name, p] of Object.entries(metrics.providers)) {
+    for (const k of ['hit', 'empty', 'error', 'skipped'] as const) {
+      lines.push(`dex_provider_results_total{provider="${name}",result="${k}"} ${p[k]}`);
+    }
+  }
+  lines.push('');
+  lines.push('# HELP dex_provider_latency_ms_avg Average provider latency');
+  lines.push('# TYPE dex_provider_latency_ms_avg gauge');
+  for (const [name, p] of Object.entries(metrics.providers)) {
+    if (p.calls > 0) lines.push(`dex_provider_latency_ms_avg{provider="${name}"} ${Math.round(p.totalMs / p.calls)}`);
+  }
+  lines.push('');
   lines.push('# HELP dex_circuit_breaker Upstream circuit breaker state (1 = active)');
   lines.push('# TYPE dex_circuit_breaker gauge');
   for (const [key, state] of Object.entries(metrics.breakers)) {
@@ -104,5 +140,6 @@ export function metricsSnapshot() {
     uptimeSeconds: Math.floor((Date.now() - metrics.startTime) / 1000),
     bridge: { hits: metrics.bridgeHits, misses: metrics.bridgeMisses },
     cache: metrics.cache,
+    providers: metrics.providers,
   };
 }

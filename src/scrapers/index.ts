@@ -8,6 +8,9 @@ import {
 import { enrichWithTmdb } from '../utils/tmdb';
 import { bestMatch } from '../utils/titleMatch';
 import { fallbackStream } from '../utils/streamFallback';
+import { StreamRequest } from '../providers/types';
+import { resolveStream, defaultDeadline } from '../providers/registry';
+import { createMovieBoxProvider, piResolverProvider, vidcoreProvider } from '../providers/streamProviders';
 import { logger } from '../middleware/logger';
 import { recordBridgeResult } from '../middleware/metrics';
 
@@ -305,37 +308,70 @@ export class ScraperEngine {
     return result;
   }
 
+  /**
+   * Résolution d'un flux. Toutes les sources passent par le MÊME orchestrateur
+   * (`providers/registry.ts`) : priorité, disjoncteur par provider, budget de
+   * temps et métriques au même endroit. Avant, l'ordre était codé en dur ici et
+   * dans `streamFallback.ts`, et rien ne mesurait quelle source servait vraiment.
+   *
+   * Le contrat de sortie est INCHANGÉ (`{ data: StreamResult, source }`) : les
+   * clients Android et PWA ne voient aucune différence.
+   */
   async stream(subjectId: string, season?: number, episode?: number, detailPath?: string): Promise<{ data: StreamResult; source: string }> {
-    if (this.isTmdbId(subjectId)) {
-      const [, tType, tId] = subjectId.split(':');
-      // 1) MovieBox via le pont (VF prioritaire)
-      const r = await this.resolveTmdb(subjectId);
-      if (r) {
-        try {
-          const mb = await this.execute('stream', (s) => s.stream(r.subjectId, season, episode, r.detailPath), `stream(${r.subjectId})`);
-          if (mb.data.sources.length > 0) return mb;
-        } catch {}
-      }
-      // 2) Fallback (resolver Pi / vixsrc) par TMDB id quand MovieBox n'a pas le
-      //    titre. On récupère titre+année (utiles à coflix côté Pi).
-      let fbTitle: string | undefined, fbYear: string | undefined;
+    const isTmdb = this.isTmdbId(subjectId);
+    const [, tType, tId] = isTmdb ? subjectId.split(':') : [];
+
+    // Titre/année : seulement pour un id TMDB, et seulement parce que le
+    // resolver Pi cherche par nom. Un appel de plus qu'on ne fait pas à vide.
+    let title: string | undefined, year: string | undefined;
+    if (isTmdb) {
       try {
         const det = await tmdbDetail((tType as TmdbMediaType) || 'movie', parseInt(tId));
-        fbTitle = det?.title; fbYear = det?.year;
-      } catch {}
-      const fb = await fallbackStream(tId, (tType as 'movie' | 'tv') || 'movie', season, episode, fbTitle, fbYear);
-      if (fb.sources.length > 0) {
-        return {
-          data: {
-            sources: fb.sources, dubs: [], subtitles: fb.subtitles, hasResource: true, freeEpisodes: 0,
-            audioLanguage: fb.audioLanguage,
-          },
-          source: 'fallback',
-        };
-      }
-      return { data: { sources: [], dubs: [], subtitles: [], hasResource: false, freeEpisodes: 0 }, source: 'none' };
+        title = det?.title; year = det?.year;
+      } catch { /* best-effort */ }
     }
-    return this.execute('stream', (s) => s.stream(subjectId, season, episode, detailPath), `stream(${subjectId})`);
+
+    const req: StreamRequest = {
+      subjectId,
+      tmdbId: isTmdb ? tId : undefined,
+      tmdbType: isTmdb ? ((tType as 'movie' | 'tv') || 'movie') : undefined,
+      season, episode, detailPath, title, year,
+      deadline: defaultDeadline(),
+    };
+
+    // MovieBox garde sa logique propre (pont TMDB + slug detailPath obligatoire),
+    // exposée à l'orchestrateur comme un provider parmi les autres.
+    const movieboxProvider = createMovieBoxProvider(async (r) => {
+      let targetId = r.subjectId;
+      let targetPath = r.detailPath;
+      if (isTmdb) {
+        const bridged = await this.resolveTmdb(r.subjectId);
+        if (!bridged) return null; // pas de correspondance MovieBox : au suivant
+        targetId = bridged.subjectId;
+        targetPath = bridged.detailPath;
+      }
+      const mb = await this.execute('stream', (s) => s.stream(targetId, r.season, r.episode, targetPath), `stream(${targetId})`);
+      return mb.data.sources.length > 0 ? (mb.data as any) : null;
+    });
+
+    const resolved = await resolveStream(req, [movieboxProvider, piResolverProvider, vidcoreProvider]);
+    if (resolved) {
+      const o = resolved.outcome;
+      return {
+        data: {
+          sources: o.sources,
+          dubs: o.dubs || [],
+          subtitles: o.subtitles || [],
+          hasResource: o.hasResource ?? true,
+          freeEpisodes: o.freeEpisodes ?? 0,
+          audioLanguage: o.audioLanguage,
+        },
+        // `moviebox` reste étiqueté par le scraper qui a répondu pour ne pas
+        // casser les tableaux de bord existants ; les autres gardent leur nom.
+        source: resolved.provider === 'moviebox' ? 'moviebox-h5api' : resolved.provider,
+      };
+    }
+    return { data: { sources: [], dubs: [], subtitles: [], hasResource: false, freeEpisodes: 0 }, source: 'none' };
   }
 
   async category(tabId: string, page: number = 1): Promise<{ data: { items: any[]; page: number; hasMore: boolean }; source: string }> {
