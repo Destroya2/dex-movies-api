@@ -369,6 +369,14 @@ export class MovieBoxH5Scraper implements Scraper {
     // Quand l'upstream ralentit, mieux vaut rendre 25 résultats tout de suite
     // que 38 après un timeout. On s'arrête donc au premier des deux plafonds.
     const SEARCH_BUDGET_MS = 8_000;
+    // Cible de résultats UNIQUES. La pagination exhaustive existait pour une
+    // bonne raison (« spider man » ne rendait que 2 titres sur 38 disponibles),
+    // mais aller jusqu'à l'épuisement coûte ~6,2 s en prod alors qu'aucun client
+    // ne pagine la recherche : l'app affiche une grille, la PWA aussi. On
+    // s'arrête donc dès qu'on a de quoi remplir largement l'écran.
+    // ⚠️ NE PAS paralléliser ces pages : tout le trafic sort par UNE seule IP
+    // de géo-spoof, et la faire rate-limiter couperait le catalogue VF entier.
+    const TARGET_UNIQUE = 40;
     const startedAt = Date.now();
     const seen = new Map<string, any>();
     let total = 0;
@@ -400,6 +408,10 @@ export class MovieBoxH5Scraper implements Scraper {
 
         const hasMore = inner.pager?.hasMore === true;
         if (!hasMore || p >= MAX_UPSTREAM_PAGES) break;
+        if (seen.size >= TARGET_UNIQUE) {
+          logger.info(`Recherche "${query}" : ${seen.size} résultats uniques après ${p} page(s), arrêt anticipé`);
+          break;
+        }
         if (Date.now() - startedAt > SEARCH_BUDGET_MS) {
           logger.warn(`Recherche "${query}" : budget de ${SEARCH_BUDGET_MS}ms atteint après ${p} page(s), ${seen.size} résultat(s) rendus`);
           break;
