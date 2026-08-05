@@ -162,7 +162,10 @@ async function piResolver(
       subtitles: (json.data.subtitles || []).map((c: any) => ({ url: c.url, language: c.language || 'Unknown' })),
       // coflix = site FR, VF par construction. vixsrc = VO la plupart du temps,
       // jamais garanti même avec le paramètre lang=fr → on ne prétend rien.
-      audioLanguage: json.provider === 'coflix' ? 'fr' : undefined,
+      // VF CONFIRMÉE, jamais estimée : `frembed` n'indexe que du doublage
+      // français et `coflix` est un site VF. Les autres (vixsrc, vidcore) sont
+      // en VO la plupart du temps mais sans garantie → on n'affirme rien.
+      audioLanguage: json.provider === 'coflix' || json.provider === 'frembed' ? 'fr' : undefined,
     };
   } catch (e: any) {
     logger.warn(`Resolver Pi injoignable (tmdb ${tmdbId}): ${e?.message || e}`);
