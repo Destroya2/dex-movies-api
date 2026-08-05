@@ -9,7 +9,7 @@ const metrics = {
   // Efficacité du cache par famille et par niveau. C'est LA métrique qui dit si
   // l'upstream est réellement protégé : un taux de hit qui s'effondre annonce
   // le rate-limit sur l'IP de géo-spoof unique bien avant la panne visible.
-  cache: {} as Record<string, { hitL1: number; hitL2: number; miss: number }>,
+  cache: {} as Record<string, { hitL1: number; hitL2: number; miss: number; stale: number }>,
   // Dernier état connu de chaque disjoncteur (voir utils/resilience.ts).
   breakers: {} as Record<string, string>,
   // Efficacité de chaque provider de flux (voir providers/registry.ts).
@@ -20,10 +20,10 @@ const metrics = {
   startTime: Date.now(),
 };
 
-export type CacheEvent = 'hitL1' | 'hitL2' | 'miss';
+export type CacheEvent = 'hitL1' | 'hitL2' | 'miss' | 'stale';
 
 export function recordCacheEvent(family: string, event: CacheEvent): void {
-  const e = metrics.cache[family] || (metrics.cache[family] = { hitL1: 0, hitL2: 0, miss: 0 });
+  const e = metrics.cache[family] || (metrics.cache[family] = { hitL1: 0, hitL2: 0, miss: 0, stale: 0 });
   e[event]++;
 }
 
@@ -107,6 +107,8 @@ export function metricsHandler(_req: Request, res: Response) {
     lines.push(`dex_cache_events_total{family="${family}",layer="l1"} ${e.hitL1}`);
     lines.push(`dex_cache_events_total{family="${family}",layer="l2"} ${e.hitL2}`);
     lines.push(`dex_cache_events_total{family="${family}",layer="miss"} ${e.miss}`);
+    // Un `stale` qui monte = un upstream en panne servi depuis le filet de secours.
+    lines.push(`dex_cache_events_total{family="${family}",layer="stale"} ${e.stale}`);
   }
   lines.push('');
   lines.push('# HELP dex_provider_results_total Stream provider outcomes');

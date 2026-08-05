@@ -92,16 +92,47 @@ function cacheMiddleware(cacheName: CacheName) {
     const captureThenContinue = () => {
       const originalJson = res.json.bind(res);
       res.json = (body: any) => {
-        if (body?.success && body?.data !== undefined && !isEmptyPayload(body.data)) {
+        const usable = body?.success && body?.data !== undefined && !isEmptyPayload(body.data);
+
+        if (usable) {
           // maxKeys fait lever ECACHEFULL une fois plein : un cache plein revient
           // à un cache absent, ça ne doit jamais casser la réponse HTTP.
           try {
             l1.set(key, body.data, ttl);
           } catch { /* L1 plein */ }
-          // L2 en tâche de fond : ne jamais retarder la réponse au client.
+          // L2 + copie de secours, en tâche de fond : jamais dans le chemin
+          // critique de la réponse.
           void persistentSet(key, body.data, ttl).catch(() => {});
+          void persistentSet(`stale:${key}`, body.data, STALE_TTL_SEC).catch(() => {});
+          return originalJson(body);
         }
-        return originalJson(body);
+
+        // ── Réponse inutilisable : on tente la copie de secours ──────────────
+        // C'est le filet contre une panne d'upstream (le Raspberry Pi est resté
+        // injoignable 2 jours en août 2026 : l'onglet VF se vidait purement et
+        // simplement). Servir un catalogue de quelques heures vaut infiniment
+        // mieux qu'un écran vide, à condition de le DIRE (`meta.stale`).
+        persistentGet<any>(`stale:${key}`)
+          .then((fallback) => {
+            if (fallback && !isEmptyPayload(fallback)) {
+              recordCacheEvent(cacheName, 'stale');
+              logger.warn(`Réponse dégradée servie depuis le cache de secours : ${key}`);
+              originalJson({
+                success: true,
+                data: fallback,
+                meta: {
+                  source: 'cache-stale',
+                  cached: true,
+                  stale: true,
+                  timestamp: Date.now(),
+                },
+              });
+              return;
+            }
+            originalJson(body);
+          })
+          .catch(() => originalJson(body));
+        return res;
       };
       next();
     };
@@ -138,6 +169,14 @@ function cacheMiddleware(cacheName: CacheName) {
       });
   };
 }
+
+/**
+ * Durée de conservation de la copie « de secours ». Bien plus longue que le TTL
+ * normal : elle ne sert JAMAIS tant que l'upstream répond, uniquement quand il
+ * tombe. Un catalogue vieux de quelques heures reste infiniment préférable à un
+ * écran vide.
+ */
+const STALE_TTL_SEC = 24 * 3600;
 
 /** État du cache pour /health et /metrics. */
 export function cacheStats() {
