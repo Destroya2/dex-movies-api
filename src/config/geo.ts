@@ -58,6 +58,31 @@ export const GEO_PROFILES: Record<string, GeoProfile> = {
       '41.202.192.1', // Cameroun
     ],
   },
+  /**
+   * France / Belgique / Suisse. **Sélectionnable, mais PAS le profil par défaut
+   * des appareils francophones** — et c'est contre-intuitif, donc mesuré trois
+   * fois, sur trois opérateurs français (Orange, Free, SFR), le 05/08/2026 :
+   *
+   *   IP française  → 394 titres, **0 doublage VF**
+   *   IP Burkina    → 215 titres, **174 en VF (81 %)**
+   *
+   * Le catalogue servi en France est bien *localisé* en français (les titres
+   * sont traduits : « Opérations spéciales : Lioness »), mais il ne contient
+   * AUCUNE des versions doublées `[Version française]`. Router les francophones
+   * ici leur ferait donc perdre tout le doublage — l'inverse du but.
+   * Disponible pour qui veut le catalogue européen (plus fourni, non doublé).
+   */
+  frEu: {
+    code: 'frEu',
+    label: 'France / Europe francophone (catalogue plus large, sans doublage)',
+    languages: [],
+    upstreamLang: 'fr',
+    ips: [
+      '90.0.0.1',    // Orange
+      '82.64.0.1',   // Free
+      '92.184.0.1',  // SFR
+    ],
+  },
   en: {
     code: 'en',
     label: 'Anglophone',
@@ -94,6 +119,21 @@ export const DEFAULT_PROFILE = GEO_PROFILES.fr;
  * redéployer de code.
  */
 const OVERRIDE_IP = process.env.SPOOF_IP || '';
+
+/**
+ * Résout un profil par son CODE explicite (choix manuel de l'utilisateur).
+ * Prioritaire sur la langue : si quelqu'un demande explicitement une région, on
+ * la lui donne, y compris si elle contient moins de VF.
+ */
+export function profileByCode(code?: string | null): GeoProfile | null {
+  if (!code) return null;
+  return GEO_PROFILES[code] || null;
+}
+
+/** Codes exposés aux clients, pour construire un sélecteur. */
+export function availableProfiles(): { code: string; label: string }[] {
+  return Object.values(GEO_PROFILES).map((p) => ({ code: p.code, label: p.label }));
+}
 
 /** Résout un profil depuis la langue de l'appareil (ex: "fr-FR", "en-US"). */
 export function profileForLanguage(language?: string | null): GeoProfile {

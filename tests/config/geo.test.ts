@@ -47,6 +47,16 @@ describe('config/geo — profils géographiques et rotation d\'IP', () => {
     }
   });
 
+  it('permet de choisir explicitement la France, sans en faire un défaut', () => {
+    const { profileByCode } = require('../../src/config/geo');
+    // Le réglage manuel doit pouvoir mener où l'utilisateur veut, y compris vers
+    // un catalogue sans doublage — c'est SON choix.
+    expect(profileByCode('frEu')?.ips[0]).toBe('90.0.0.1');
+    // Mais la langue seule ne doit jamais y conduire : mesuré 0 % de VF.
+    expect(profileForLanguage('fr-FR').code).toBe('fr');
+    expect(GEO_PROFILES.frEu.languages).toHaveLength(0);
+  });
+
   it('installe le profil pour toute la durée de la requête', () => {
     runWithGeo(GEO_PROFILES.en, () => {
       expect(currentProfile().code).toBe('en');

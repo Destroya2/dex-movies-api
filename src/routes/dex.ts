@@ -6,6 +6,7 @@ import {
   isTmdbEnabled, tmdbHome, tmdbTrending, tmdbDiscover, tmdbGenres, tmdbDetail, tmdbSimilar, TmdbMediaType,
 } from '../utils/tmdbCatalog';
 import { mobileVfCategories, mobileVfList, mobileApiStatus } from '../utils/mobileApi';
+import { availableProfiles } from '../config/geo';
 
 const router = Router();
 const scraper = new ScraperEngine();
@@ -361,6 +362,21 @@ router.get('/recommend/:subjectId', cacheMiddleware('home'), wrapAsync(async (re
     success: true,
     data: { items: data.items, page, hasMore: data.hasMore },
     meta: { source, cached: false, timestamp: Date.now() },
+  });
+}));
+
+/**
+ * @openapi
+ * /api/dex/regions:
+ *   get:
+ *     tags: [Catalog]
+ *     summary: Régions de catalogue disponibles (sélecteur côté app)
+ */
+router.get('/regions', wrapAsync(async (_req, res) => {
+  res.json({
+    success: true,
+    data: availableProfiles(),
+    meta: { timestamp: Date.now() },
   });
 }));
 
