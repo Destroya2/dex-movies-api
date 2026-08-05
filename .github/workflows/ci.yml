@@ -1,0 +1,62 @@
+name: CI
+
+# Ce dépôt (backend) est le SEUL du projet à avoir un remote GitHub — et c'est
+# lui qui déclenche le déploiement Vercel à chaque push sur master. La CI vit
+# donc ici : une workflow placée dans le dépôt racine (sans remote) ne s'exécute
+# jamais, ce qui était le cas jusqu'au 05/08/2026.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  quality:
+    name: Typecheck · build · tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      # Tests unitaires uniquement : déterministes et hors-ligne. Le smoke test
+      # (`npm run smoke -- <url>`) tape des sites tiers instables par nature —
+      # le mettre ici rendrait la CI rouge pour des raisons qui ne sont pas les
+      # nôtres. Il reste la validation manuelle après déploiement.
+      - name: Tests
+        run: npm test
+        env:
+          TEST_MODE: 'true'
+
+  secrets:
+    name: Aucun secret committé
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Garde-fou sur la règle d'or du projet. Cherche des affectations de
+      # secrets en dur, en ignorant les lectures d'environnement légitimes.
+      - name: Vérifier l'absence de secrets en dur
+        run: |
+          if grep -rnEi "(api_key|apikey|secret|token|password)[[:space:]]*[:=][[:space:]]*['\"][A-Za-z0-9_/+-]{16,}" src/ \
+             | grep -v "process.env" ; then
+            echo "::error::Secret potentiellement committé en clair (voir ci-dessus)"
+            exit 1
+          fi
+          echo "OK — aucun secret en clair détecté"
