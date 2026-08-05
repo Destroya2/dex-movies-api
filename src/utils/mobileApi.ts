@@ -1,0 +1,227 @@
+import { request } from './http';
+import { logger } from '../middleware/logger';
+import { generateXClientToken, generateXTrSignature } from './crypto';
+
+/**
+ * Client de l'API MOBILE MovieBox (`/wefeed-mobile-bff/`, signature HMAC).
+ *
+ * Longtemps documentée comme « morte / clés pivotées » dans ce projet : c'était
+ * faux. Elle répond avec nos clés HMAC d'origine — trois détails la rendaient
+ * inaccessible, tous vérifiés le 05/08/2026 :
+ *
+ * 1. **L'hôte.** `api3.aoneroom.com` (celui par défaut historiquement) renvoie
+ *    404 sur TOUTES les routes. Ceux qui répondent : api4, api5, api6, api4sg,
+ *    api.inmoviebox.com.
+ * 2. **Le token invité.** Il faut d'abord appeler `tab-operating` et lire le
+ *    header de réponse `x-user` (même mécanique que le scraper h5), puis envoyer
+ *    `Authorization: Bearer <token>`. Sans lui, tous les `subject-api/*`
+ *    répondent **441**.
+ * 3. **`sp_code` doit rester VIDE.** Le renseigner (`40401`, valeur vue dans une
+ *    doc de rétro-ingénierie) bascule sur le cluster INDIEN : catalogue Hindi/CAM,
+ *    zéro VF. Vide + `region: BF` + `system_language: fr` → catalogue francophone.
+ *
+ * Ce que ça apporte et que l'API h5 ne sait pas faire : un **catalogue VF paginé
+ * et rangé par catégories françaises réelles** (Tendance, Top 200, Box Office
+ * 2025, Animation, Action, Comédie, Horreur, Arts Martiaux, Romance) — mesuré à
+ * 99 % de titres VF, là où `/subject/filter` (h5) ignore `classify=French dub`.
+ *
+ * ⚠️ Cette API ne remplace PAS le scraper h5 primaire : elle vient EN PLUS,
+ * derrière ses propres routes, pour ne pas mettre le streaming en risque.
+ */
+
+// api3 volontairement absent : 404 sur toutes les routes (vérifié).
+const MOBILE_HOSTS = [
+  'https://api4.aoneroom.com',
+  'https://api5.aoneroom.com',
+  'https://api6.aoneroom.com',
+  'https://api4sg.aoneroom.com',
+  'https://api.inmoviebox.com',
+];
+
+const SPOOF_IP = process.env.SPOOF_IP || '196.28.244.1';
+
+// Identité d'appareil alignée sur l'app officielle. `sp_code` VIDE = catalogue
+// francophone (voir en-tête). Ne pas « compléter » ce champ.
+const CLIENT_INFO = JSON.stringify({
+  package_name: 'com.community.oneroom',
+  version_name: '3.0.11.1230.03',
+  version_code: 50020042,
+  os: 'android',
+  os_version: '12',
+  install_ch: 'ps',
+  device_id: 'a3f1c8e94b7d02516ac9e83f47b21d60',
+  install_store: 'ps',
+  gaid: '7c9e6679-7425-40de-944b-e07fc1f90ae7',
+  brand: 'Redmi',
+  model: '2201117TG',
+  system_language: 'fr',
+  net: 'NETWORK_WIFI',
+  region: 'BF',
+  timezone: 'Africa/Ouagadougou',
+  sp_code: '',
+  'X-Play-Mode': '2',
+});
+
+const TOKEN_TTL_MS = 25 * 60 * 1000;
+
+let guestToken: string | null = null;
+let tokenFetchedAt = 0;
+let activeHost: string | null = null;
+
+function buildHeaders(host: string, url: string, token?: string | null): Record<string, string> {
+  const headers: Record<string, string> = {
+    'User-Agent': 'MovieBoxPro/16.2.1 (Android 12; Pixel 6)',
+    'X-M-Version': '16.2.1',
+    Accept: 'application/json',
+    'Content-Type': 'application/json;charset=UTF-8',
+    Referer: `${host}/`,
+    'x-client-token': generateXClientToken(),
+    'x-tr-signature': generateXTrSignature(
+      'GET', 'application/json', 'application/json;charset=UTF-8', url, null, false
+    ),
+    'x-client-info': CLIENT_INFO,
+    'x-client-status': '0',
+    'X-Play-Mode': '2',
+    // Géo-spoof francophone, comme partout ailleurs (règle d'or du projet).
+    'X-Forwarded-For': SPOOF_IP,
+    'CF-Connecting-IP': SPOOF_IP,
+    'X-Real-IP': SPOOF_IP,
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
+/**
+ * Récupère (et met en cache) le token invité. Il arrive dans le header `x-user`
+ * de n'importe quel appel non authentifié — on utilise `tab-operating`, le seul
+ * endpoint qui répond sans token.
+ */
+async function acquireGuestToken(force = false): Promise<string | null> {
+  if (!force && guestToken && Date.now() - tokenFetchedAt < TOKEN_TTL_MS) return guestToken;
+
+  const hosts = activeHost ? [activeHost, ...MOBILE_HOSTS.filter((h) => h !== activeHost)] : MOBILE_HOSTS;
+  for (const host of hosts) {
+    const url = `${host}/wefeed-mobile-bff/tab-operating?page=1&tabId=0&version=`;
+    try {
+      const resp = await request(url, { headers: buildHeaders(host, url), timeout: 12000 });
+      if (resp.status !== 200) continue;
+      const xUser = resp.headers['x-user'];
+      if (!xUser) continue;
+      const token = JSON.parse(String(xUser)).token;
+      if (!token) continue;
+      guestToken = token;
+      tokenFetchedAt = Date.now();
+      activeHost = host;
+      logger.info(`API mobile : token invité obtenu via ${host}`);
+      return token;
+    } catch (e: any) {
+      logger.warn(`API mobile : ${host} injoignable (${e?.message || e})`);
+    }
+  }
+  return null;
+}
+
+/** GET signé avec token invité, bascule d'hôte automatique et retry sur 441. */
+async function mobileGet(path: string): Promise<any | null> {
+  const token = await acquireGuestToken();
+  if (!token) return null;
+
+  const hosts = activeHost ? [activeHost, ...MOBILE_HOSTS.filter((h) => h !== activeHost)] : MOBILE_HOSTS;
+  for (const host of hosts) {
+    const url = `${host}${path}`;
+    try {
+      const resp = await request(url, { headers: buildHeaders(host, url, token), timeout: 15000 });
+      // 441 = token refusé/expiré → on en redemande un et on retente une fois.
+      if (resp.status === 441) {
+        const fresh = await acquireGuestToken(true);
+        if (!fresh) continue;
+        const retry = await request(url, { headers: buildHeaders(host, url, fresh), timeout: 15000 });
+        if (retry.status !== 200) continue;
+        return JSON.parse(retry.body);
+      }
+      if (resp.status !== 200) continue;
+      activeHost = host;
+      return JSON.parse(resp.body);
+    } catch (e: any) {
+      logger.warn(`API mobile ${path} via ${host} : ${e?.message || e}`);
+    }
+  }
+  return null;
+}
+
+// ─── Mapping vers le format ContentItem de l'app ──────────────────────────────
+
+/** `https://moviebox.ph/fr/detail/xeno-version-francaise-SNbNi4tlos3` → slug. */
+function slugFromDetailUrl(detailUrl?: string): string {
+  if (!detailUrl) return '';
+  const clean = detailUrl.split('?')[0].replace(/\/$/, '');
+  return clean.substring(clean.lastIndexOf('/') + 1);
+}
+
+function mapMobileSubject(sub: any): any | null {
+  if (!sub?.subjectId) return null;
+  const corner = sub.corner ? String(sub.corner) : '';
+  const isFrench = /fran[cç]ais|vostfr|\bvf\b/i.test(corner);
+  return {
+    subjectId: String(sub.subjectId),
+    detailPath: slugFromDetailUrl(sub.detailUrl),
+    title: sub.title || 'Sans titre',
+    posterUrl: sub.cover?.url || '',
+    coverUrl: sub.cover?.url || undefined,
+    type: sub.subjectType === 2 ? 'series' : 'movie',
+    year: sub.releaseDate ? String(sub.releaseDate).substring(0, 4) : undefined,
+    rating: sub.imdbRatingValue || sub.imdbRate || sub.rate || undefined,
+    genres: sub.genre ? String(sub.genre).split(',').map((g: string) => g.trim()) : undefined,
+    plot: sub.description || undefined,
+    duration: sub.seconds ? `${Math.floor(Number(sub.seconds) / 60)}m` : undefined,
+    country: sub.countryName || undefined,
+    isFrench: isFrench || undefined,
+    language: /vostfr/i.test(corner) ? 'VOSTFR' : isFrench ? 'VF' : undefined,
+    badge: corner || undefined,
+    source: 'moviebox-mobile',
+  };
+}
+
+// ─── API publique ─────────────────────────────────────────────────────────────
+
+export interface VfCategory {
+  id: string;
+  name: string;
+}
+
+/** Catégories réelles du catalogue VF (libellés déjà en français côté upstream). */
+export async function mobileVfCategories(): Promise<VfCategory[]> {
+  const json = await mobileGet('/wefeed-mobile-bff/tab/ranking-list?tabId=2&page=1&perPage=1');
+  const list = json?.data?.categoryList || [];
+  return list
+    .map((c: any) => ({ id: String(c.type ?? c.categoryType ?? ''), name: c.name || c.title || '' }))
+    .filter((c: VfCategory) => c.id && c.name);
+}
+
+/**
+ * Catalogue VF paginé. `categoryId` = `id` renvoyé par [mobileVfCategories]
+ * (absent → catégorie par défaut de l'upstream, « Tendance »).
+ */
+export async function mobileVfList(
+  categoryId?: string,
+  page = 1
+): Promise<{ items: any[]; page: number; hasMore: boolean; category?: string }> {
+  const pg = Math.max(1, Math.floor(Number(page) || 1));
+  const qs = new URLSearchParams({ tabId: '2', page: String(pg), perPage: '20' });
+  if (categoryId) qs.set('categoryType', categoryId);
+  const json = await mobileGet(`/wefeed-mobile-bff/tab/ranking-list?${qs.toString()}`);
+  if (!json) return { items: [], page: pg, hasMore: false };
+  const items = (json?.data?.subjects || []).map(mapMobileSubject).filter(Boolean);
+  return {
+    items,
+    page: pg,
+    hasMore: Boolean(json?.data?.pager?.hasMore) && items.length > 0,
+    category: json?.data?.currentCategoryType ? String(json.data.currentCategoryType) : undefined,
+  };
+}
+
+/** Diagnostic : l'API mobile est-elle joignable depuis cet environnement ? */
+export async function mobileApiStatus(): Promise<{ ok: boolean; host?: string }> {
+  const token = await acquireGuestToken(true);
+  return { ok: Boolean(token), host: activeHost || undefined };
+}

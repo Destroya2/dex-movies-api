@@ -5,6 +5,7 @@ import { ScraperEngine } from '../scrapers';
 import {
   isTmdbEnabled, tmdbHome, tmdbTrending, tmdbDiscover, tmdbGenres, tmdbDetail, tmdbSimilar, TmdbMediaType,
 } from '../utils/tmdbCatalog';
+import { mobileVfCategories, mobileVfList, mobileApiStatus } from '../utils/mobileApi';
 
 const router = Router();
 const scraper = new ScraperEngine();
@@ -361,6 +362,70 @@ router.get('/recommend/:subjectId', cacheMiddleware('home'), wrapAsync(async (re
     data: { items: data.items, page, hasMore: data.hasMore },
     meta: { source, cached: false, timestamp: Date.now() },
   });
+}));
+
+// ─── Catalogue VF natif (API mobile MovieBox) ────────────────────────────────
+// Source distincte du h5 : catalogue 100 % VF, paginé, rangé par catégories
+// françaises réelles. Voir src/utils/mobileApi.ts pour le pourquoi/comment.
+
+/**
+ * @openapi
+ * /api/dex/vf/categories:
+ *   get:
+ *     tags: [Catalog]
+ *     summary: Catégories du catalogue VF (API mobile MovieBox)
+ */
+router.get('/vf/categories', cacheMiddleware('home'), wrapAsync(async (_req, res) => {
+  const data = await mobileVfCategories();
+  res.json({
+    success: true,
+    data,
+    meta: { source: 'moviebox-mobile', cached: false, timestamp: Date.now() },
+  });
+}));
+
+/**
+ * @openapi
+ * /api/dex/vf/list:
+ *   get:
+ *     tags: [Catalog]
+ *     summary: Catalogue VF paginé (API mobile MovieBox)
+ *     parameters:
+ *       - in: query
+ *         name: category
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ */
+router.get('/vf/list', cacheMiddleware('home'), wrapAsync(async (req, res) => {
+  const category = (req.query.category as string) || undefined;
+  const page = parseInt(req.query.page as string) || 1;
+  const data = await mobileVfList(category, page);
+  res.json({
+    success: true,
+    data,
+    meta: {
+      source: data.items.length ? 'moviebox-mobile' : 'none',
+      cached: false,
+      timestamp: Date.now(),
+    },
+  });
+}));
+
+/**
+ * @openapi
+ * /api/dex/vf/status:
+ *   get:
+ *     tags: [Catalog]
+ *     summary: Diagnostic — l'API mobile est-elle joignable depuis ce serveur ?
+ */
+router.get('/vf/status', wrapAsync(async (_req, res) => {
+  const status = await mobileApiStatus();
+  res.json({ success: true, data: status, meta: { timestamp: Date.now() } });
 }));
 
 /**
