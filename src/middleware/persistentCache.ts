@@ -1,8 +1,25 @@
 import NodeCache from 'node-cache';
 import { logger } from './logger';
 
-const UPSTASH_URL = process.env.UPSTASH_REDIS_URL || '';
-const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_TOKEN || '';
+/**
+ * Résolution des identifiants Redis, tolérante aux conventions de nommage.
+ *
+ * L'intégration Upstash du Marketplace Vercel provisionne `KV_REST_API_URL` /
+ * `KV_REST_API_TOKEN`, alors que le code lisait `UPSTASH_REDIS_URL` /
+ * `UPSTASH_REDIS_TOKEN` : la base était bien créée, mais le cache L2 restait
+ * silencieusement désactivé (`/health` → `cacheL2: {enabled:false}`). On accepte
+ * donc les trois conventions rencontrées.
+ */
+const UPSTASH_URL =
+  process.env.KV_REST_API_URL ||
+  process.env.UPSTASH_REDIS_REST_URL ||
+  process.env.UPSTASH_REDIS_URL ||
+  '';
+const UPSTASH_TOKEN =
+  process.env.KV_REST_API_TOKEN ||
+  process.env.UPSTASH_REDIS_REST_TOKEN ||
+  process.env.UPSTASH_REDIS_TOKEN ||
+  '';
 
 let redis: any = null;
 
