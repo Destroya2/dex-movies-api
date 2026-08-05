@@ -4,6 +4,7 @@ import { ENV } from '../config/env';
 import { persistentGet, persistentSet, isPersistentCacheEnabled } from './persistentCache';
 import { recordCacheEvent } from './metrics';
 import { logger } from './logger';
+import { geoCacheSuffix } from './geoContext';
 
 /**
  * Cache de réponses à DEUX NIVEAUX.
@@ -56,14 +57,18 @@ function isEmptyPayload(data: any): boolean {
 }
 
 /**
- * Clé de cache. Préfixée par famille : le L2 est partagé entre toutes les
- * instances ET toutes les familles, une collision servirait la réponse d'une
- * autre route. `nocache` est retiré pour qu'un refresh forcé réécrive la
- * MÊME entrée au lieu d'en créer une seconde.
+ * Clé de cache. Trois composantes, toutes nécessaires :
+ *  - la **famille** : le L2 est partagé entre toutes les instances ET toutes les
+ *    routes, une collision servirait la réponse d'une autre route ;
+ *  - le **profil géographique** : MovieBox sert un catalogue DIFFÉRENT selon le
+ *    pays de l'IP. Sans cette composante, le premier appel d'un utilisateur
+ *    anglophone empoisonnerait le cache et les francophones recevraient un
+ *    catalogue sans aucune VF (et réciproquement) ;
+ *  - l'**URL** sans `nocache`, pour qu'un refresh forcé réécrive la MÊME entrée.
  */
 function buildKey(cacheName: string, req: Request): string {
   const url = req.originalUrl.replace(/[?&]nocache=[^&]*/g, '');
-  return `resp:${cacheName}:${url}`;
+  return `resp:${cacheName}:${geoCacheSuffix()}:${url}`;
 }
 
 function cacheMiddleware(cacheName: CacheName) {

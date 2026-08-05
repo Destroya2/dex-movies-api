@@ -3,43 +3,54 @@ import { API_H5_URL, API_H5_MIRRORS, API_WEB_URL, API_WEB_MIRRORS, ENDPOINTS, SU
 import { Scraper, ScraperConfig, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult } from '../base';
 import { persistentGet, persistentSet } from '../../middleware/persistentCache';
 import { logger } from '../../middleware/logger';
+import { currentProfile, geoSpoofHeaders } from '../../config/geo';
 
-const ALLOWED_REGION_IP = process.env.SPOOF_IP || '196.28.244.1';
+const UA_CHROME =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36';
 
-const GEO_SPOOF_HEADERS = {
-  'X-Forwarded-For': ALLOWED_REGION_IP,
-  'CF-Connecting-IP': ALLOWED_REGION_IP,
-  'X-Real-IP': ALLOWED_REGION_IP,
-};
+/**
+ * Les en-têtes sont désormais construits À CHAQUE APPEL, et non figés au
+ * chargement du module : l'IP de géo-spoof et la langue dépendent du profil
+ * géographique de la requête en cours (voir config/geo.ts). C'est ce qui permet
+ * à la fois de servir le bon catalogue selon la langue de l'appareil ET de faire
+ * tourner plusieurs IP au lieu d'une seule.
+ */
+function h5Headers(): Record<string, string> {
+  const profile = currentProfile();
+  return {
+    'User-Agent': UA_CHROME,
+    'Referer': 'https://moviebox.ph/',
+    'Origin': 'https://moviebox.ph',
+    'X-Client-Info': `{"timezone":"${profile.code === 'fr' ? 'Africa/Ouagadougou' : 'Etc/UTC'}"}`,
+    'X-Request-Lang': profile.upstreamLang,
+    'X-Client-Type': 'h5',
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+    'sec-ch-ua': '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    ...geoSpoofHeaders(),
+  };
+}
 
-const H5_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
-  'Referer': 'https://moviebox.ph/',
-  'Origin': 'https://moviebox.ph',
-  'X-Client-Info': '{"timezone":"Africa/Ouagadougou"}',
-  'X-Request-Lang': 'fr',
-  'X-Client-Type': 'h5',
-  'Accept': 'application/json',
-  'Content-Type': 'application/json',
-  'sec-ch-ua': '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
-  'sec-ch-ua-mobile': '?0',
-  'sec-ch-ua-platform': '"Windows"',
-  ...GEO_SPOOF_HEADERS,
-};
-
-const PLAYER_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
-  'Accept': 'application/json',
-  'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
-  'Cache-Control': 'no-cache',
-  'Pragma': 'no-cache',
-  'X-Client-Info': '{"timezone":"Africa/Ouagadougou"}',
-  'X-Source': '',
-  'sec-ch-ua': '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
-  'sec-ch-ua-mobile': '?0',
-  'sec-ch-ua-platform': '"Windows"',
-  ...GEO_SPOOF_HEADERS,
-};
+function playerHeaders(): Record<string, string> {
+  const profile = currentProfile();
+  return {
+    'User-Agent': UA_CHROME,
+    'Accept': 'application/json',
+    'Accept-Language': profile.code === 'fr'
+      ? 'fr-FR,fr;q=0.9,en;q=0.8'
+      : `${profile.upstreamLang},en;q=0.8`,
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'X-Client-Info': `{"timezone":"${profile.code === 'fr' ? 'Africa/Ouagadougou' : 'Etc/UTC'}"}`,
+    'X-Source': '',
+    'sec-ch-ua': '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    ...geoSpoofHeaders(),
+  };
+}
 
 const CATEGORY_TABS: { id: string; title: string }[] = [
   { id: 'trending', title: 'Trending' },
@@ -191,7 +202,7 @@ export class MovieBoxH5Scraper implements Scraper {
     const hosts = [...new Set([API_H5_URL, ...API_H5_MIRRORS])];
     for (const baseUrl of hosts) {
       try {
-        const response = await request(`${baseUrl}${ENDPOINTS.h5Home}?host=moviebox.ph`, { headers: H5_HEADERS });
+        const response = await request(`${baseUrl}${ENDPOINTS.h5Home}?host=moviebox.ph`, { headers: h5Headers() });
         if (response.status === 200) {
           const xUser = response.headers['x-user'];
           if (xUser) {
@@ -218,7 +229,7 @@ export class MovieBoxH5Scraper implements Scraper {
 
   private async authHeaders(): Promise<Record<string, string>> {
     const token = await this.acquireBearerToken();
-    return { ...H5_HEADERS, 'Authorization': `Bearer ${token}` };
+    return { ...h5Headers(), 'Authorization': `Bearer ${token}` };
   }
 
   private updateTokenFromResponse(headers: Record<string, string>): void {
@@ -553,7 +564,7 @@ export class MovieBoxH5Scraper implements Scraper {
     const playUrl = `${domain}${ENDPOINTS.h5Play}?subjectId=${subjectId}&se=${se}&ep=${ep}&detailPath=${slug}`;
 
     const playResponse = await request(playUrl, {
-      headers: { ...PLAYER_HEADERS, 'Referer': playerReferer },
+      headers: { ...playerHeaders(), 'Referer': playerReferer },
     });
 
     if (playResponse.status !== 200) {
@@ -583,7 +594,7 @@ export class MovieBoxH5Scraper implements Scraper {
     for (const baseUrl of domHosts) {
       try {
         const response = await request(`${baseUrl}${ENDPOINTS.h5PlayDomain}`, {
-          headers: { ...H5_HEADERS },
+          headers: { ...h5Headers() },
         });
         if (response.status === 200) {
           const domData = await response.json();
@@ -757,7 +768,7 @@ export class MovieBoxH5Scraper implements Scraper {
     const hosts = [...new Set([API_WEB_URL, ...API_WEB_MIRRORS])];
     for (const baseUrl of hosts) {
       try {
-        const headers = { ...H5_HEADERS, ...(referer ? { Referer: referer } : {}) };
+        const headers = { ...h5Headers(), ...(referer ? { Referer: referer } : {}) };
         const response = await request(`${baseUrl}${path}`, { headers });
         if (response.status === 200) return response.json();
       } catch {}

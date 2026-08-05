@@ -9,6 +9,8 @@ import { apiRateLimiter } from './middleware/rateLimit';
 import { cacheStats } from './middleware/cache';
 import { persistentPing } from './middleware/persistentCache';
 import { breakerSnapshot } from './utils/resilience';
+import { geoContextMiddleware } from './middleware/geoContext';
+import { GEO_PROFILES } from './config/geo';
 import dexRouter from './routes/dex';
 import proxyRouter from './routes/proxy';
 
@@ -39,6 +41,9 @@ export function createApp(options: { trustProxy?: boolean } = {}): Express {
   app.use(express.json());
   app.use(metricsMiddleware);
   app.use(apiRateLimiter);
+  // Doit venir AVANT toute route : le cache et les scrapers lisent le profil
+  // géographique depuis le contexte de la requête.
+  app.use(geoContextMiddleware);
 
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
     customCss: '.swagger-ui .topbar { display: none }',
@@ -69,6 +74,11 @@ export function createApp(options: { trustProxy?: boolean } = {}): Express {
         openCircuits: breakers,
       },
       cache: cacheStats(),
+      geo: {
+        profiles: Object.values(GEO_PROFILES).map((p) => ({
+          code: p.code, label: p.label, ips: p.ips.length, languages: p.languages,
+        })),
+      },
       metrics: metricsSnapshot(),
     });
   });
