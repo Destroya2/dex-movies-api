@@ -4,6 +4,7 @@ import { API_MOBILE_HOSTS, ENDPOINTS } from '../../config/constants';
 import { acquireBearerToken, mobileUrl } from './http';
 import { StreamSource, SubtitleTrack, DubInfo } from './types';
 import { fetchDetail } from './detail';
+import { audioTrackOf, orderByAudioTrack } from '../../utils/streamSources';
 
 export interface StreamResult {
   sources: StreamSource[];
@@ -44,7 +45,8 @@ export async function fetchStream(
   }
 
   return {
-    sources: allSources,
+    // Doublages de langue inconnue déclassés — voir utils/streamSources.ts.
+    sources: orderByAudioTrack(allSources),
     dubs,
     subtitles: allSubtitles,
     hasResource: allSources.length > 0,
@@ -99,6 +101,12 @@ async function fetchPlayInfo(
         duration: s.duration ? Number(s.duration) : undefined,
         codec: s.codecName || 'h264',
         signCookie: s.signCookie || undefined,
+        // Deux façons d'être un doublage : venir d'un sujet « dub »
+        // (la boucle appelante nous passe alors sa langue), ou être un remux
+        // audio servi sous /tran-audio/ sur le sujet d'origine.
+        audioTrack: (language !== 'Original'
+          ? 'translated'
+          : audioTrackOf(s.url || '')) as 'original' | 'translated',
       })).filter((s: StreamSource) => s.url);
 
       const subtitles = await fetchCaptions(subjectId, streams[0]?.id || '', token, language);

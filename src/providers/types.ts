@@ -37,6 +37,21 @@ export interface StreamSource {
   duration?: number;
   codec?: string;
   signCookie?: string;
+  /**
+   * Piste audio du fichier.
+   *
+   * `'translated'` = doublage ajouté par MovieBox sur une fiche dont la langue
+   * d'origine est autre (fichiers servis sous `/tran-audio/`). La langue de ce
+   * doublage n'est PAS indiquée par l'amont : ce peut être de l'espagnol, du
+   * portugais, du hindi. Sans cette distinction, un client qui choisit « la
+   * meilleure définition » tombe dessus dès qu'elle dépasse l'originale — c'est
+   * ce qui faisait jouer Lioness en espagnol (360p original, 480p doublé).
+   *
+   * Les fiches marquées `[Version française]` sont des SUJETS distincts : leur
+   * piste française est leur piste normale (`/bt/`), donc `'original'`. Ce
+   * champ ne les dégrade pas.
+   */
+  audioTrack?: 'original' | 'translated';
 }
 
 export interface StreamSubtitle {
