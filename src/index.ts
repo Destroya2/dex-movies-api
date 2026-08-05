@@ -6,9 +6,11 @@ import { ENV } from './config/env';
 import { logger } from './middleware/logger';
 import { errorHandler } from './middleware/errorHandler';
 import { swaggerSpec } from './config/swagger';
-import { metricsMiddleware, metricsHandler } from './middleware/metrics';
+import { metricsMiddleware, metricsHandler, metricsSnapshot } from './middleware/metrics';
 import { apiRateLimiter } from './middleware/rateLimit';
-import { caches } from './middleware/cache';
+import { cacheStats } from './middleware/cache';
+import { persistentPing } from './middleware/persistentCache';
+import { breakerSnapshot } from './utils/resilience';
 import dexRouter from './routes/dex';
 import proxyRouter from './routes/proxy';
 
@@ -25,19 +27,32 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
   customSiteTitle: 'Dex Movies API Docs',
 }));
 
-app.get('/health', (_req, res) => {
-  const cacheStats = Object.fromEntries(
-    Object.entries(caches).map(([name, cache]) => [
-      name,
-      { keys: cache.keys().length, hits: cache.getStats().hits, misses: cache.getStats().misses },
-    ])
-  );
+/**
+ * Health check qui TESTE ses dépendances au lieu de répondre « ok » à l'aveugle.
+ * `status` vaut `degraded` quand une dépendance non vitale est tombée (cache L2,
+ * relais Pi) : l'API répond toujours, mais on veut le voir avant les utilisateurs.
+ */
+app.get('/health', async (_req, res) => {
+  const [redis] = await Promise.all([persistentPing()]);
+  const breakers = breakerSnapshot();
+
+  const degraded =
+    (redis.enabled && !redis.reachable) ||
+    Object.values(breakers).some((b) => b.state === 'open');
+
   res.json({
-    status: 'ok',
+    status: degraded ? 'degraded' : 'ok',
     uptime: process.uptime(),
     timestamp: Date.now(),
     memory: process.memoryUsage(),
-    cache: cacheStats,
+    dependencies: {
+      cacheL2: redis,
+      // Un disjoncteur ouvert = un upstream écarté : c'est la panne partielle
+      // qui était invisible jusqu'ici (metrics.ts remis à zéro à chaque cold start).
+      openCircuits: breakers,
+    },
+    cache: cacheStats(),
+    metrics: metricsSnapshot(),
   });
 });
 

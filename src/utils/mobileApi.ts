@@ -1,6 +1,7 @@
 import { request } from './http';
 import { logger } from '../middleware/logger';
 import { generateXClientToken, generateXTrSignature } from './crypto';
+import { runResilient, hostKey, CircuitOpenError } from './resilience';
 
 /**
  * Client de l'API MOBILE MovieBox (`/wefeed-mobile-bff/`, signature HMAC).
@@ -86,13 +87,26 @@ interface RawResponse {
   body: string;
 }
 
-/** Appel direct (IP du serveur). */
+/**
+ * Appel direct (IP du serveur), sous disjoncteur par hôte : un hôte mort
+ * (`api3` a basculé en 404 du jour au lendemain) est écarté pendant 60 s au lieu
+ * de coûter son timeout complet à chaque requête utilisateur.
+ */
 async function directCall(url: string, headers: Record<string, string>): Promise<RawResponse | null> {
   try {
-    const resp = await request(url, { headers, timeout: 12000 });
-    return { status: resp.status, headers: resp.headers, body: resp.body };
+    return await runResilient(
+      `mobile:${hostKey(url)}`,
+      async () => {
+        const resp = await request(url, { headers, timeout: 12000 });
+        // 404/441 = réponse de l'hôte, pas une panne : ne pas pénaliser le circuit.
+        return { status: resp.status, headers: resp.headers, body: resp.body };
+      },
+      { attempts: 2, backoffMs: 250 }
+    );
   } catch (e: any) {
-    logger.warn(`API mobile (direct) ${url} : ${e?.message || e}`);
+    if (!(e instanceof CircuitOpenError)) {
+      logger.warn(`API mobile (direct) ${url} : ${e?.message || e}`);
+    }
     return null;
   }
 }
