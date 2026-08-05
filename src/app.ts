@@ -12,6 +12,7 @@ import { breakerSnapshot } from './utils/resilience';
 import { geoContextMiddleware } from './middleware/geoContext';
 import { GEO_PROFILES } from './config/geo';
 import dexRouter from './routes/dex';
+import accountRouter from './routes/account';
 import proxyRouter from './routes/proxy';
 
 /**
@@ -38,7 +39,11 @@ export function createApp(options: { trustProxy?: boolean } = {}): Express {
 
   app.use(compression());
   app.use(cors({ origin: '*' }));
-  app.use(express.json());
+  // Plafond explicite : la valeur par défaut de 100 Ko coupait la
+  // synchronisation d'un historique fourni avant même d'atteindre la route.
+  // 512 Ko laisse la marge, et le contrôle métier (256 Ko) rend une erreur
+  // parlante plutôt qu'un rejet brut du parseur.
+  app.use(express.json({ limit: '512kb' }));
   app.use(metricsMiddleware);
   app.use(apiRateLimiter);
   // Doit venir AVANT toute route : le cache et les scrapers lisent le profil
@@ -99,12 +104,14 @@ export function createApp(options: { trustProxy?: boolean } = {}): Express {
         stream: 'GET /api/dex/stream/:subjectId?season=1&episode=1',
         episodes: 'GET /api/dex/episodes/:subjectId?season=1',
         vf: 'GET /api/dex/vf/list?category=&page=1',
+        account: 'POST /api/dex/account · POST /api/dex/account/pair · PUT /api/dex/account/sync/:kind',
         'proxy.stream': 'GET /api/proxy/stream?url=',
         'proxy.captions': 'GET /api/proxy/captions?url=',
       },
     });
   });
 
+  app.use('/api/dex/account', accountRouter);
   app.use('/api/dex', dexRouter);
   app.use('/api/proxy', proxyRouter);
 
