@@ -1,5 +1,5 @@
 import { request } from '../../utils/http';
-import { API_H5_URL, API_H5_MIRRORS, API_WEB_URL, API_WEB_MIRRORS, ENDPOINTS } from '../../config/constants';
+import { API_H5_URL, API_H5_MIRRORS, API_WEB_URL, API_WEB_MIRRORS, ENDPOINTS, SUBJECT_TYPE } from '../../config/constants';
 import { Scraper, ScraperConfig, HomeResult, SearchResult, SuggestResult, DetailResult, StreamResult } from '../base';
 import { persistentGet, persistentSet } from '../../middleware/persistentCache';
 import { logger } from '../../middleware/logger';
@@ -82,13 +82,28 @@ function getCornerLanguage(corner: string, title?: string, detailPath?: string, 
   return { isFrench: false };
 }
 
+/**
+ * Décode les entités HTML des titres upstream. Les rails CUSTOM (contenus
+ * courts) renvoient des titres bruts non décodés — « Jackie Chan &amp; John
+ * Cena » s'affichait tel quel dans l'app.
+ */
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ');
+}
+
 function mapSubject(sub: any, sectionTitle?: string): any | null {
   if (!sub) return null;
   const subjectId = sub.subjectId;
   if (!subjectId) return null;
   const corner = sub.corner ? String(sub.corner) : '';
   const detailPath = sub.detailPath || '';
-  const title = sub.title || 'Unknown';
+  const title = decodeEntities(sub.title || 'Unknown');
   const subtitleLangs = sub.subtitles ? String(sub.subtitles) : undefined;
   const lang = getCornerLanguage(corner, title, detailPath, subtitleLangs);
   const item: any = {
@@ -282,8 +297,35 @@ export class MovieBoxH5Scraper implements Scraper {
         if (items.length > 0) {
           sections.push({ id: op.opId || opType, title, type: 'row', items });
         }
+      } else if (opType === 'CUSTOM' && (op.customData?.items?.length || 0) > 0) {
+        // ⚠️ Les rails CUSTOM ne rangent PAS leur contenu dans `subjects` (toujours
+        // vide) mais dans `customData.items[]`, chaque entrée portant son propre
+        // `subject` + une image d'affiche dédiée. Ils étaient donc renvoyés VIDES
+        // (`items: []`) et disparaissaient de l'accueil de l'app, alors qu'ils
+        // s'affichent dans l'app officielle : 165 éléments perdus sur un relevé du
+        // 05/08/2026, dont 41 films/séries bien lisibles (« Jurassic World:
+        // Rebirth [Version française] », « Moana », « Miraculous »…).
+        // Types conservés : films (1), séries (2), éducation/jeunesse (5) et
+        // formats courts (9 — replays WWE, extraits : vérifiés lisibles via
+        // /stream). La MUSIQUE (6) reste exclue, comme partout ailleurs.
+        const items = (op.customData.items || [])
+          .map((entry: any) => {
+            const sub = entry.subject;
+            if (!sub || sub.subjectType === SUBJECT_TYPE.MUSIC) return null;
+            const mapped = mapSubject(sub);
+            if (!mapped) return null;
+            // L'affiche du rail est souvent une image dédiée (format paysage) :
+            // on la garde en couverture sans écraser le poster vertical.
+            if (entry.image?.url) mapped.coverUrl = entry.image.url;
+            if (entry.title) mapped.title = decodeEntities(entry.title);
+            return mapped;
+          })
+          .filter(Boolean);
+        if (items.length > 0) {
+          sections.push({ id: op.opId || 'custom', title, type: 'row', items });
+        }
       } else {
-        // SPORT_LIVE, FILTER, CUSTOM — pass-through natif
+        // SPORT_LIVE, FILTER, CUSTOM sans contenu — pass-through natif
         sections.push({
           id: op.opId || opType,
           title,
