@@ -238,12 +238,17 @@ export class ScraperEngine {
    * Une source en panne dégrade désormais le résultat au lieu de le faire échouer.
    */
   async search(query: string, page: number = 1): Promise<{ data: SearchResult; source: string }> {
+    // Même problème que sur /stream : le nom était codé en dur. Une recherche
+    // servie par l'API mobile s'annonçait « moviebox-h5api ».
+    let scraperUtilise: string | null = null;
+
     const movieboxProvider: CatalogProvider = {
       name: 'moviebox',
       priority: 10, // en tête : badges VF fiables, seuls items réellement lisibles
       supports: () => true,
       search: async (q, p) => {
         const r = await this.execute('search', (s) => s.search(q, p), `search(${q})`);
+        scraperUtilise = r.source;
         return (r.data.items || []).map((i: any) => ({ ...i, source: 'moviebox' }));
       },
     };
@@ -266,7 +271,9 @@ export class ScraperEngine {
     return {
       data: { items, total: items.length, page },
       // Une recherche servie sans MovieBox n'a pas la même valeur : on le dit.
-      source: degraded.includes('moviebox') ? 'degraded' : 'moviebox-h5api',
+      source: degraded.includes('moviebox')
+        ? 'degraded'
+        : (scraperUtilise || 'moviebox'),
     };
   }
 
