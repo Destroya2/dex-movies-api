@@ -10,8 +10,14 @@ export class MovieBoxMobileScraper implements Scraper {
     name: 'moviebox-hmac',
     version: '2.0.0',
     baseUrl: API_MOBILE_HOSTS[0],
-    // Secondaire : api3.aoneroom.com bloque les IP datacenter (Vercel)
-    priority: 3,
+    // PRIMAIRE. C'est l'API de l'application officielle : elle expose des
+    // métadonnées que le h5 n'a pas (dubs déclarés, pistes audio nommées,
+    // rendus DASH). Elle n'était pas utilisable en production tant que son
+    // transport appelait en direct — les IP Vercel n'obtiennent jamais de jeton.
+    // Depuis qu'elle passe par le transport partagé (bascule sur le relais Pi),
+    // elle l'est. Le h5 reste enregistré derrière elle et prend le relais dès
+    // qu'un appel échoue ou revient vide (voir ScraperEngine.execute).
+    priority: 0,
   };
 
   async isAvailable(): Promise<boolean> {

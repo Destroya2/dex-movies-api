@@ -150,7 +150,11 @@ export class MovieBoxH5Scraper implements Scraper {
     name: 'moviebox-h5api',
     version: '2.2.0',
     baseUrl: API_H5_URL,
-    priority: 0,
+    // RELAIS. Le cœur est désormais l'API mobile (scrapers/moviebox). Le h5
+    // reste enregistré juste derrière : il prend la main dès que l'API mobile
+    // échoue, revient vide, ou que le relais Pi est injoignable — ce qui arrive
+    // pour de vrai, la machine étant résidentielle.
+    priority: 10,
   };
 
   private bearerToken: string | null = null;

@@ -57,6 +57,16 @@ export interface StreamSource {
    * champ ne les dégrade pas.
    */
   audioTrack?: 'original' | 'unknown' | 'translated';
+  /**
+   * Langue de la piste, telle que DÉCLARÉE par l'amont — « esla dub »,
+   * « ptbr dub », « Original Audio ».
+   *
+   * Renseignée uniquement par l'API mobile : le h5 ne fournit rien de tel, et
+   * c'est précisément pour ça qu'il fallait deviner les doublages à partir du
+   * chemin `/tran-audio/`. Quand ce champ est là, l'app peut écrire « espagnol »
+   * au lieu de « autre langue ».
+   */
+  audioLabel?: string;
 }
 
 export interface StreamSubtitle {

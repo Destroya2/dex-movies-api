@@ -92,12 +92,21 @@ interface RawResponse {
  * (`api3` a basculé en 404 du jour au lendemain) est écarté pendant 60 s au lieu
  * de coûter son timeout complet à chaque requête utilisateur.
  */
-async function directCall(url: string, headers: Record<string, string>): Promise<RawResponse | null> {
+async function directCall(
+  url: string,
+  headers: Record<string, string>,
+  upstream?: { method: 'POST'; body: string },
+): Promise<RawResponse | null> {
   try {
     return await runResilient(
       `mobile:${hostKey(url)}`,
       async () => {
-        const resp = await request(url, { headers, timeout: 12000 });
+        const resp = await request(url, {
+          headers,
+          timeout: 12000,
+          method: upstream?.method,
+          body: upstream?.body,
+        });
         // 404/441 = réponse de l'hôte, pas une panne : ne pas pénaliser le circuit.
         return { status: resp.status, headers: resp.headers, body: resp.body };
       },
@@ -112,7 +121,11 @@ async function directCall(url: string, headers: Record<string, string>): Promise
 }
 
 /** Même appel, relayé par le Pi (IP résidentielle). */
-async function relayCall(url: string, headers: Record<string, string>): Promise<RawResponse | null> {
+async function relayCall(
+  url: string,
+  headers: Record<string, string>,
+  upstream?: { method: 'POST'; body: string },
+): Promise<RawResponse | null> {
   if (!RELAY_BASE) return null;
   try {
     const resp = await request(
@@ -120,7 +133,9 @@ async function relayCall(url: string, headers: Record<string, string>): Promise<
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, headers }),
+        // `method`/`body` décrivent la requête à REJOUER en amont, à ne pas
+        // confondre avec le POST qui porte l'enveloppe jusqu'au Pi.
+        body: JSON.stringify({ url, headers, method: upstream?.method, body: upstream?.body }),
         timeout: 25000,
       }
     );
@@ -138,14 +153,18 @@ async function relayCall(url: string, headers: Record<string, string>): Promise<
  * Exécute l'appel par le chemin qui marche : direct si possible, relais Pi
  * sinon. La bascule est mémorisée pour ne pas retenter le direct à chaque fois.
  */
-async function call(url: string, headers: Record<string, string>): Promise<RawResponse | null> {
-  if (useRelay === true) return relayCall(url, headers);
-  const direct = await directCall(url, headers);
+async function call(
+  url: string,
+  headers: Record<string, string>,
+  upstream?: { method: 'POST'; body: string },
+): Promise<RawResponse | null> {
+  if (useRelay === true) return relayCall(url, headers, upstream);
+  const direct = await directCall(url, headers, upstream);
   if (direct && direct.status !== 403 && direct.status !== 0) {
     if (useRelay === null) useRelay = false;
     return direct;
   }
-  const relayed = await relayCall(url, headers);
+  const relayed = await relayCall(url, headers, upstream);
   if (relayed) {
     if (!useRelay) logger.info('API mobile : appel direct bloqué, bascule sur le relais Pi');
     useRelay = true;
@@ -154,7 +173,12 @@ async function call(url: string, headers: Record<string, string>): Promise<RawRe
   return direct;
 }
 
-function buildHeaders(host: string, url: string, token?: string | null): Record<string, string> {
+function buildHeaders(
+  host: string,
+  url: string,
+  token?: string | null,
+  upstream?: { method: 'POST'; body: string },
+): Record<string, string> {
   const headers: Record<string, string> = {
     'User-Agent': 'MovieBoxPro/16.2.1 (Android 12; Pixel 6)',
     'X-M-Version': '16.2.1',
@@ -162,8 +186,15 @@ function buildHeaders(host: string, url: string, token?: string | null): Record<
     'Content-Type': 'application/json;charset=UTF-8',
     Referer: `${host}/`,
     'x-client-token': generateXClientToken(),
+    // La signature couvre la MÉTHODE et le CORPS : signer un POST comme un GET
+    // donne une signature valide en apparence et un 4xx côté serveur.
     'x-tr-signature': generateXTrSignature(
-      'GET', 'application/json', 'application/json;charset=UTF-8', url, null, false
+      upstream?.method || 'GET',
+      'application/json',
+      'application/json;charset=UTF-8',
+      url,
+      upstream?.body ?? null,
+      false,
     ),
     'x-client-info': CLIENT_INFO,
     'x-client-status': '0',
@@ -224,8 +255,15 @@ async function acquireGuestToken(force = false): Promise<string | null> {
   return null;
 }
 
-/** GET signé avec token invité, bascule d'hôte automatique et retry sur 441. */
-async function mobileGet(path: string): Promise<any | null> {
+/**
+ * GET signé avec token invité, bascule d'hôte automatique et retry sur 441.
+ *
+ * Exporté : c'est LE transport de l'API mobile qui fonctionne réellement en
+ * production (bascule direct → relais Pi, pool d'hôtes, disjoncteurs). Le
+ * scraper `scrapers/moviebox/` s'appuie dessus au lieu de refaire un appel
+ * direct de son côté — le direct est bloqué depuis Vercel.
+ */
+export async function mobileApiGet(path: string): Promise<any | null> {
   const token = await acquireGuestToken();
   if (!token) return null;
 
@@ -250,6 +288,90 @@ async function mobileGet(path: string): Promise<any | null> {
     } catch { continue; }
   }
   return null;
+}
+
+/**
+ * Même chose, mais renvoie la réponse BRUTE (statut + en-têtes + corps).
+ *
+ * Nécessaire pour lire l'en-tête `x-user` : c'est là que MovieBox glisse le
+ * jeton porteur d'un sujet, jamais dans le corps.
+ */
+export async function mobileApiRaw(path: string): Promise<RawResponse | null> {
+  const token = await acquireGuestToken();
+  const hosts = activeHost ? [activeHost, ...MOBILE_HOSTS.filter((h) => h !== activeHost)] : MOBILE_HOSTS;
+  for (const host of hosts) {
+    const url = `${host}${path}`;
+    const resp = await call(url, buildHeaders(host, url, token));
+    if (!resp) continue;
+    if (resp.status === 200) {
+      activeHost = host;
+      return resp;
+    }
+  }
+  return null;
+}
+
+/**
+ * GET signé avec un jeton PORTEUR précis (celui d'un sujet) et des en-têtes
+ * supplémentaires. `play-info` en a besoin : le jeton invité global ne lui
+ * suffit pas toujours.
+ */
+export async function mobileApiGetAs(
+  path: string,
+  token: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<RawResponse | null> {
+  const hosts = activeHost ? [activeHost, ...MOBILE_HOSTS.filter((h) => h !== activeHost)] : MOBILE_HOSTS;
+  for (const host of hosts) {
+    const url = `${host}${path}`;
+    const resp = await call(url, { ...buildHeaders(host, url, token), ...extraHeaders });
+    if (!resp) continue;
+    if (resp.status === 200) {
+      activeHost = host;
+      return resp;
+    }
+    // 441 = jeton refusé : inutile d'essayer les autres hôtes avec le même.
+    if (resp.status === 441) return resp;
+  }
+  return null;
+}
+
+/**
+ * POST signé (jeton invité), même chemin réseau que les GET.
+ *
+ * La recherche de l'API mobile (`subject-api/search/v2`) est un POST : sans
+ * cela, elle retombait systématiquement sur le scraper h5.
+ */
+export async function mobileApiPost(path: string, body: any): Promise<any | null> {
+  const token = await acquireGuestToken();
+  if (!token) return null;
+  const payload = JSON.stringify(body);
+  const hosts = activeHost ? [activeHost, ...MOBILE_HOSTS.filter((h) => h !== activeHost)] : MOBILE_HOSTS;
+  for (const host of hosts) {
+    const url = `${host}${path}`;
+    const up = { method: 'POST' as const, body: payload };
+    const resp = await call(url, buildHeaders(host, url, token, up), up);
+    if (!resp || resp.status !== 200) continue;
+    activeHost = host;
+    try { return JSON.parse(resp.body); } catch { continue; }
+  }
+  return null;
+}
+
+/**
+ * Jeton invité courant (en obtient un si besoin).
+ *
+ * `play-info` l'accepte : vérifié le 06/08/2026, il renvoie le même `streams`
+ * qu'avec un jeton propre au sujet. C'est le repli quand la fiche ne fournit
+ * pas d'en-tête `x-user` — ce qui est le cas courant, pas l'exception.
+ */
+export async function mobileGuestToken(): Promise<string | null> {
+  return acquireGuestToken();
+}
+
+/** Le relais est-il configuré ? Sans lui, l'API mobile est inutilisable en prod. */
+export function mobileRelayConfigured(): boolean {
+  return Boolean(RELAY_BASE);
 }
 
 // ─── Mapping vers le format ContentItem de l'app ──────────────────────────────
@@ -294,7 +416,7 @@ export interface VfCategory {
 
 /** Catégories réelles du catalogue VF (libellés déjà en français côté upstream). */
 export async function mobileVfCategories(): Promise<VfCategory[]> {
-  const json = await mobileGet('/wefeed-mobile-bff/tab/ranking-list?tabId=2&page=1&perPage=1');
+  const json = await mobileApiGet('/wefeed-mobile-bff/tab/ranking-list?tabId=2&page=1&perPage=1');
   const list = json?.data?.categoryList || [];
   return list
     .map((c: any) => ({ id: String(c.type ?? c.categoryType ?? ''), name: c.name || c.title || '' }))
@@ -312,7 +434,7 @@ export async function mobileVfList(
   const pg = Math.max(1, Math.floor(Number(page) || 1));
   const qs = new URLSearchParams({ tabId: '2', page: String(pg), perPage: '20' });
   if (categoryId) qs.set('categoryType', categoryId);
-  const json = await mobileGet(`/wefeed-mobile-bff/tab/ranking-list?${qs.toString()}`);
+  const json = await mobileApiGet(`/wefeed-mobile-bff/tab/ranking-list?${qs.toString()}`);
   if (!json) return { items: [], page: pg, hasMore: false };
   const items = (json?.data?.subjects || []).map(mapMobileSubject).filter(Boolean);
   return {

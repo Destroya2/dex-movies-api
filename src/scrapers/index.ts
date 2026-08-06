@@ -13,6 +13,7 @@ import { resolveStream, defaultDeadline } from '../providers/registry';
 import { searchCatalog, CatalogProvider } from '../providers/catalogRegistry';
 import { createMovieBoxProvider, piResolverProvider, vidcoreProvider } from '../providers/streamProviders';
 import { logger } from '../middleware/logger';
+import { mobileRelayConfigured } from '../utils/mobileApi';
 import { recordBridgeResult } from '../middleware/metrics';
 
 type ScraperMethod = 'home' | 'search' | 'suggest' | 'detail' | 'stream' | 'category';
@@ -46,19 +47,60 @@ function isEmptyResult(method: ScraperMethod, data: any): boolean {
   }
 }
 
+/**
+ * Budget accordé à un scraper qui n'est pas le dernier de la chaîne.
+ *
+ * Vercel coupe la fonction à 30 s. La lecture a droit à plus : c'est l'appel
+ * le plus coûteux (fiche + play-info + sous-titres) et le seul dont l'échec se
+ * voit immédiatement à l'écran.
+ */
+function budgetFor(method: ScraperMethod): number {
+  return method === 'stream' ? 12_000 : 9_000;
+}
+
+function withBudget<T>(p: Promise<T>, ms: number, name: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${name} : budget de ${ms} ms dépassé, passage au suivant`)),
+      ms,
+    );
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 export class ScraperEngine {
   private scrapers: Scraper[] = [];
 
   constructor() {
-    // H5 = scraper primaire (tout le catalogue VF).
-    this.register(new MovieBoxH5Scraper());
-    // Mobile HMAC (scraper MovieBox original, un des 3 hacks vitaux du projet —
-    // voir REGLES.md) est BLOQUÉ sur Vercel (Cloudflare / IP) : en prod il
-    // n'apporte rien et ajoute de la latence pour un appel qui échoue. On ne
-    // l'enregistre qu'en local via un flag, mais on NE LE SUPPRIME PAS.
-    if (process.env.ENABLE_BLOCKED_SCRAPERS === '1') {
+    // ─── CŒUR : l'API mobile (celle de l'application officielle) ────────────
+    //
+    // Elle expose ce que le h5 n'a pas : les doublages déclarés par fiche
+    // (`dubs`), donc des pistes audio NOMMÉES au lieu d'être devinées à partir
+    // de l'URL, et des rendus DASH multi-débit.
+    //
+    // Elle est enregistrée ici SEULEMENT si le relais résidentiel est
+    // configuré : depuis les IP datacenter de Vercel, l'upstream répond 200
+    // mais ne délivre jamais de jeton invité. Sans relais, l'enregistrer
+    // reviendrait à payer un aller-retour perdu avant CHAQUE repli sur le h5,
+    // sur toutes les requêtes de tous les utilisateurs.
+    if (mobileRelayConfigured() || process.env.ENABLE_BLOCKED_SCRAPERS === '1') {
       this.register(new MovieBoxMobileScraper());
+    } else {
+      logger.warn(
+        'API mobile non enregistrée : FALLBACK_RESOLVER_URL absent, le relais Pi est ' +
+        'indispensable depuis Vercel. Le h5 assure seul le service.',
+      );
     }
+
+    // ─── RELAIS : le h5 du site ─────────────────────────────────────────────
+    //
+    // Toujours enregistré, jamais conditionnel. Il prend la main dès que l'API
+    // mobile échoue, revient vide, ou dépasse son budget de temps — et le Pi
+    // qui porte le relais est une machine résidentielle, donc ça arrivera.
+    this.register(new MovieBoxH5Scraper());
   }
 
   register(scraper: Scraper): void {
@@ -74,9 +116,18 @@ export class ScraperEngine {
     const errors: { name: string; error: any }[] = [];
     let emptyResult: { data: T; source: string } | null = null;
 
-    for (const scraper of this.scrapers) {
+    for (let i = 0; i < this.scrapers.length; i++) {
+      const scraper = this.scrapers[i];
+      const isLast = i === this.scrapers.length - 1;
       try {
-        const data = await fn(scraper);
+        // Un scraper qui n'est pas le dernier doit rendre la main À TEMPS pour
+        // que le suivant puisse encore répondre dans le budget de la requête
+        // (30 s sur Vercel). Sans cela, un relais lent ou injoignable ne
+        // dégraderait pas le service : il le couperait, puisque le repli
+        // n'aurait plus le temps de s'exécuter.
+        const data = isLast
+          ? await fn(scraper)
+          : await withBudget(fn(scraper), budgetFor(method), scraper.config.name);
         if (isEmptyResult(method, data)) {
           if (!emptyResult) emptyResult = { data, source: scraper.config.name };
           continue;

@@ -64,6 +64,8 @@ export interface StreamSource {
   signCookie?: string;
   /** Voir providers/types.ts — 'translated' = doublage de langue inconnue. */
   audioTrack?: 'original' | 'unknown' | 'translated';
+  /** Langue déclarée par l'amont (« esla dub »…). Voir providers/types.ts. */
+  audioLabel?: string;
 }
 
 export interface SubtitleTrack {
