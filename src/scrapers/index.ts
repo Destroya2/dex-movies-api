@@ -399,6 +399,12 @@ export class ScraperEngine {
 
     // MovieBox garde sa logique propre (pont TMDB + slug detailPath obligatoire),
     // exposée à l'orchestrateur comme un provider parmi les autres.
+    // Nom du scraper qui a RÉELLEMENT répondu. Il était codé en dur plus bas
+    // (« moviebox-h5api » quoi qu'il arrive) : `meta.source` mentait donc dès
+    // qu'un autre scraper servait la réponse, et c'est précisément le champ
+    // qu'on lit pour savoir quelle API travaille.
+    let scraperUtilise: string | null = null;
+
     const movieboxProvider = createMovieBoxProvider(async (r) => {
       let targetId = r.subjectId;
       let targetPath = r.detailPath;
@@ -409,6 +415,7 @@ export class ScraperEngine {
         targetPath = bridged.detailPath;
       }
       const mb = await this.execute('stream', (s) => s.stream(targetId, r.season, r.episode, targetPath), `stream(${targetId})`);
+      scraperUtilise = mb.source;
       return mb.data.sources.length > 0 ? (mb.data as any) : null;
     });
 
@@ -424,9 +431,11 @@ export class ScraperEngine {
           freeEpisodes: o.freeEpisodes ?? 0,
           audioLanguage: o.audioLanguage,
         },
-        // `moviebox` reste étiqueté par le scraper qui a répondu pour ne pas
-        // casser les tableaux de bord existants ; les autres gardent leur nom.
-        source: resolved.provider === 'moviebox' ? 'moviebox-h5api' : resolved.provider,
+        // Le nom du scraper qui a répondu (moviebox-hmac / moviebox-h5api) ;
+        // les autres providers gardent le leur (pi-resolver, vidcore).
+        source: resolved.provider === 'moviebox'
+          ? (scraperUtilise || 'moviebox')
+          : resolved.provider,
       };
     }
     return { data: { sources: [], dubs: [], subtitles: [], hasResource: false, freeEpisodes: 0 }, source: 'none' };
