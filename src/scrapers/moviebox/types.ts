@@ -13,6 +13,16 @@ export interface ContentItem {
   rating?: string;
   year?: string;
   badge?: string;
+  /** Slug MovieBox, requis par /stream. L'amont ne le donne que dans `detailUrl`. */
+  detailPath?: string;
+  /** Image paysage (bannières). */
+  coverUrl?: string;
+  genres?: string[];
+  plot?: string;
+  country?: string;
+  /** Marqueurs de langue déduits de `corner` (« En français », « VOSTFR »…). */
+  isFrench?: boolean;
+  language?: string;
 }
 
 export interface ContentDetail {

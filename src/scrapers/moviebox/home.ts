@@ -2,43 +2,153 @@ import { ENDPOINTS } from '../../config/constants';
 import { mobileGet } from './http';
 import { HomeSection, ContentItem, CategoryContent } from './types';
 
-const HOME_TABS: Record<string, string> = {
-  '4516404531735022304': 'Trending',
-  '5692654647815587592': 'Trending in Cinema',
-  '414907768299210008': 'Bollywood',
-  '3859721901924910512': 'South Indian',
-  '8019599703232971616': 'Hollywood',
-  '4741626294545400336': 'Top Series This Week',
-  '8434602210994128512': 'Anime',
-  '1255898847918934600': 'Reality TV',
-  '4903182713986896328': 'Indian Drama',
-  '7878715743607948784': 'Korean Drama',
-  '8788126208987989488': 'Chinese Drama',
-  '3910636007619709856': 'Western TV',
-  '5177200225164885656': 'Turkish Drama',
-};
+/**
+ * Accueil de l'API mobile.
+ *
+ * ⚠️ L'implémentation précédente appelait `tab/ranking-list` SIX fois, avec
+ * `tabId=0` codé en dur et un `categoryType` différent à chaque appel, pour
+ * fabriquer six rails « Trending », « Bollywood », « Hollywood »… Vérifié le
+ * 07/08/2026 : **l'amont ignore purement et simplement `categoryType`**. Les six
+ * appels renvoyaient donc la MÊME liste de 12 titres — 12 titres uniques
+ * étalés sur 72 emplacements, six rails rigoureusement identiques à l'écran,
+ * et aucune bannière. Les autres combinaisons de paramètres (`tabId=<id>`,
+ * `tabId=<id>&categoryType=0`) ne répondent pas du tout.
+ *
+ * Le vrai flux d'accueil est `tab-operating` — celui que l'application
+ * officielle appelle, et déjà utilisé ici pour obtenir le jeton invité. Il rend
+ * 24 sections **déjà localisées en français** (« Séries Tendance », « Films
+ * Tendance », « Animés populaires »), bannière comprise.
+ */
+
+/** Types de sections porteuses de contenu. Le reste (FILTER, SPORT_LIVE) est ignoré. */
+const SECTION_BANNIERE = 'BANNER';
+const SECTION_RAIL = 'SUBJECTS_MOVIE';
+const SECTION_CUSTOM = 'CUSTOM';
+
+/**
+ * `https://moviebox.ph/fr/detail/our-sticky-love-version-francaise-6pTvaiKKZe8`
+ * → `our-sticky-love-version-francaise-6pTvaiKKZe8`
+ *
+ * L'amont ne renvoie JAMAIS `detailPath` sur l'accueil : le slug n'existe qu'au
+ * bout de `detailUrl`. Sans lui, `/stream` doit le redemander en interrogeant
+ * la fiche — un aller-retour par titre, payé au moment où l'utilisateur clique.
+ */
+function slugDepuisUrl(detailUrl?: string): string | undefined {
+  if (!detailUrl) return undefined;
+  const propre = String(detailUrl).split('?')[0].replace(/\/$/, '');
+  const slug = propre.substring(propre.lastIndexOf('/') + 1);
+  return slug || undefined;
+}
+
+/**
+ * `corner` porte le marqueur de langue (« En français », « VOSTFR »).
+ * C'est la seule source fiable : le titre ne suffit pas — « Kiss the French
+ * Girl » n'est pas un doublage.
+ */
+function langueDepuisCorner(corner?: string): { isFrench?: boolean; language?: string } {
+  if (!corner) return {};
+  const c = String(corner).trim();
+  if (/vostfr/i.test(c)) return { isFrench: true, language: 'VOSTFR' };
+  if (/fran[cç]ais|\bvf\b/i.test(c)) return { isFrench: true, language: 'VF' };
+  return {};
+}
+
+/**
+ * Mappe une entrée d'accueil, quelle que soit la forme de la section.
+ *
+ * Les entrées de BANNER et de CUSTOM enveloppent le vrai contenu dans un objet
+ * `subject`, en laissant `subjectId: 0` et `title: undefined` au niveau du
+ * dessus. Lire le niveau du dessus donne donc des entrées vides — c'est le même
+ * piège que celui déjà documenté sur les rails CUSTOM du scraper h5.
+ */
+function mapperEntree(entree: any, imagePaysage?: boolean): ContentItem | null {
+  if (!entree) return null;
+  const sujet = entree.subject || entree;
+  const subjectId = String(sujet.subjectId || entree.subjectId || '');
+  if (!subjectId || subjectId === '0') return null;
+
+  const titre = sujet.title || entree.title;
+  if (!titre) return null;
+
+  const langue = langueDepuisCorner(sujet.corner || entree.corner);
+  const affiche = sujet.cover?.url || entree.image?.url || '';
+
+  return {
+    subjectId,
+    title: titre,
+    posterUrl: affiche,
+    // Sur la bannière, `image` est le visuel large de mise en avant ; ailleurs
+    // il n'y a pas de paysage et on laisse le champ vide plutôt que d'y remettre
+    // l'affiche verticale, qui s'afficherait étirée.
+    coverUrl: imagePaysage ? (entree.image?.url || affiche) : undefined,
+    type: (sujet.subjectType === 2 ? 'series' : 'movie') as 'series' | 'movie',
+    rating: sujet.imdbRatingValue || sujet.imdbRate || sujet.rate || undefined,
+    year: sujet.releaseDate ? String(sujet.releaseDate).substring(0, 4) : undefined,
+    genres: sujet.genre ? String(sujet.genre).split(',').map((g: string) => g.trim()) : undefined,
+    plot: sujet.description || undefined,
+    country: sujet.countryName || undefined,
+    detailPath: slugDepuisUrl(sujet.detailUrl || entree.detailUrl),
+    badge: sujet.corner || entree.corner || undefined,
+    ...langue,
+  };
+}
+
+/** Extrait les entrées brutes d'une section selon son type. */
+function entreesDeSection(section: any): { brutes: any[]; banniere: boolean } {
+  switch (section?.type) {
+    case SECTION_BANNIERE:
+      return { brutes: section.banner?.banners || [], banniere: true };
+    case SECTION_RAIL:
+      return { brutes: section.subjects || [], banniere: false };
+    case SECTION_CUSTOM:
+      return { brutes: section.customData?.items || [], banniere: false };
+    default:
+      // FILTER (chips de catégories), SPORT_LIVE (retransmissions) : pas des
+      // rails de contenu, rien à afficher dans la grille.
+      return { brutes: [], banniere: false };
+  }
+}
 
 export async function fetchHomepage(): Promise<HomeSection[]> {
-  const sections: HomeSection[] = [];
+  const json = await mobileGet(`${ENDPOINTS.tabOperating}?page=1&tabId=0&version=`, 'home');
+  const brutes: any[] = json?.data?.items || [];
 
-  for (const [tabId, title] of Object.entries(HOME_TABS).slice(0, 6)) {
-    try {
-      const path = `${ENDPOINTS.rankingList}?tabId=0&categoryType=${tabId}&page=1&perPage=15`;
-      const json = await mobileGet(path, 'home');
-      const items = parseTabResponse(json, tabId);
-      if (items.length > 0) {
-        sections.push({ id: tabId, title, type: 'row', items });
+  const sections: HomeSection[] = [];
+  for (const [index, section] of brutes.entries()) {
+    const { brutes: entrees, banniere } = entreesDeSection(section);
+    if (entrees.length === 0) continue;
+
+    const vus = new Set<string>();
+    const items: ContentItem[] = [];
+    for (const e of entrees) {
+      const item = mapperEntree(e, banniere);
+      // Dédoublonnage INTRA-section : la bannière répète volontiers le même
+      // titre sous deux visuels, et une liste à doublons casse les clés des
+      // listes Compose côté app.
+      if (item && !vus.has(item.subjectId)) {
+        vus.add(item.subjectId);
+        items.push(item);
       }
-    } catch {
-      continue;
     }
+    if (items.length === 0) continue;
+
+    sections.push({
+      id: String(section.opId || section.title || index),
+      title: section.title || '',
+      type: banniere ? 'banner' : 'row',
+      items,
+    });
   }
 
   return sections;
 }
 
 export async function fetchCategoryTabs(): Promise<{ id: string; title: string }[]> {
-  return Object.entries(HOME_TABS).map(([id, title]) => ({ id, title }));
+  const json = await mobileGet(`${ENDPOINTS.tabOperating}?page=1&tabId=0&version=`, 'home');
+  const brutes: any[] = json?.data?.items || [];
+  return brutes
+    .filter((s) => entreesDeSection(s).brutes.length > 0 && s.title)
+    .map((s, i) => ({ id: String(s.opId || i), title: String(s.title) }));
 }
 
 export async function fetchCategoryContent(
@@ -48,34 +158,12 @@ export async function fetchCategoryContent(
   const path = `${ENDPOINTS.rankingList}?tabId=0&categoryType=${tabId}&page=${page}&perPage=20`;
   const json = await mobileGet(path, 'home');
   const rawItems = json?.data?.items || json?.data?.subjects || [];
-  const items = rawItems.map(mapToContentItem).filter(Boolean) as ContentItem[];
+  const items = rawItems.map((e: any) => mapperEntree(e)).filter(Boolean) as ContentItem[];
 
   return {
     items,
     total: json?.data?.pager?.totalCount || items.length,
     page,
     hasMore: items.length >= 20,
-  };
-}
-
-function parseTabResponse(json: any, _tabId: string): ContentItem[] {
-  const raw = json?.data?.items || json?.data?.subjects || [];
-  return raw.map(mapToContentItem).filter(Boolean) as ContentItem[];
-}
-
-function mapToContentItem(item: any): ContentItem | null {
-  if (!item) return null;
-  const subject = item.subject || item;
-  const subjectId = subject.subjectId || item.subjectId;
-  if (!subjectId) return null;
-
-  return {
-    subjectId: String(subjectId),
-    title: subject.title || item.title || 'Unknown',
-    posterUrl: subject.cover?.url || item.cover?.url || '',
-    type: (subject.subjectType === 2 || item.subjectType === 2) ? 'series' : 'movie',
-    rating: subject.imdbRatingValue || item.imdbRatingValue || undefined,
-    year: subject.releaseDate ? subject.releaseDate.substring(0, 4) : undefined,
-    badge: subject.corner || item.corner || undefined,
   };
 }
