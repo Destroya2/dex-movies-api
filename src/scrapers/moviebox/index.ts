@@ -46,6 +46,7 @@ export class MovieBoxMobileScraper implements Scraper {
     const d = await fetchDetail(subjectId);
     return {
       subjectId: d.subjectId,
+      detailPath: d.detailPath,
       title: d.title,
       posterUrl: d.posterUrl,
       coverUrl: d.backdropUrl,

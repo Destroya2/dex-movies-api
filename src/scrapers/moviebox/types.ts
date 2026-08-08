@@ -27,6 +27,8 @@ export interface ContentItem {
 
 export interface ContentDetail {
   subjectId: string;
+  /** Slug requis par /stream — dérivé de `detailUrl`, jamais fourni tel quel. */
+  detailPath?: string;
   title: string;
   description: string;
   posterUrl: string;

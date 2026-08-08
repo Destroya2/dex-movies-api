@@ -1,6 +1,7 @@
 import { ENDPOINTS } from '../../config/constants';
 import { mobileGet } from './http';
 import { HomeSection, ContentItem, CategoryContent } from './types';
+import { slugDepuisUrl } from '../../utils/detailSlug';
 
 /**
  * Accueil de l'API mobile.
@@ -25,20 +26,9 @@ const SECTION_BANNIERE = 'BANNER';
 const SECTION_RAIL = 'SUBJECTS_MOVIE';
 const SECTION_CUSTOM = 'CUSTOM';
 
-/**
- * `https://moviebox.ph/fr/detail/our-sticky-love-version-francaise-6pTvaiKKZe8`
- * → `our-sticky-love-version-francaise-6pTvaiKKZe8`
- *
- * L'amont ne renvoie JAMAIS `detailPath` sur l'accueil : le slug n'existe qu'au
- * bout de `detailUrl`. Sans lui, `/stream` doit le redemander en interrogeant
- * la fiche — un aller-retour par titre, payé au moment où l'utilisateur clique.
- */
-function slugDepuisUrl(detailUrl?: string): string | undefined {
-  if (!detailUrl) return undefined;
-  const propre = String(detailUrl).split('?')[0].replace(/\/$/, '');
-  const slug = propre.substring(propre.lastIndexOf('/') + 1);
-  return slug || undefined;
-}
+// slugDepuisUrl vit désormais dans utils/detailSlug.ts : la recherche et la
+// fiche en ont besoin exactement pareil, et les deux rendaient un slug vide
+// faute de lire `detailUrl` plutôt qu'un `detailPath` que l'amont n'envoie pas.
 
 /**
  * `corner` porte le marqueur de langue (« En français », « VOSTFR »).

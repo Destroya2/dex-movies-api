@@ -2,6 +2,7 @@ import { ENDPOINTS } from '../../config/constants';
 import { mobilePost } from './http';
 import { SearchResult } from './types';
 import { detectFrenchDub } from '../../utils/frenchDub';
+import { slugDeSujet } from '../../utils/detailSlug';
 
 /**
  * Extrait les titres d'une réponse `search/v2`.
@@ -32,7 +33,11 @@ export async function search(
   const items: SearchResult[] = extraireSujets(json).map((item: any) => {
     const sub = item.subject || item;
     const corner = sub.corner ? String(sub.corner) : '';
-    const detailPath = sub.detailPath || item.detailPath || '';
+    // ⚠️ Le slug n'arrive PAS dans `detailPath` : l'API mobile ne remplit que
+    // `detailUrl`, dont le slug est le dernier segment (même piège que sur
+    // l'accueil, où slugDepuisUrl existait déjà). Chercher `detailPath` rendait
+    // donc toujours vide.
+    const detailPath = slugDeSujet(sub, item) || '';
     const title = sub.title || 'Unknown';
     // Ce mapping ne rendait que 6 champs : la page de recherche n'affichait
     // donc AUCUN badge de langue, y compris sur les fiches « [Version

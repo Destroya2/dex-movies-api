@@ -1,6 +1,7 @@
 import { ENDPOINTS } from '../../config/constants';
 import { mobileGet } from './http';
 import { ContentDetail, SeasonInfo, DubInfo, CastMember } from './types';
+import { slugDeSujet } from '../../utils/detailSlug';
 
 export async function fetchDetail(subjectId: string): Promise<ContentDetail> {
   const path = `${ENDPOINTS.detail}?subjectId=${subjectId}`;
@@ -12,17 +13,30 @@ export async function fetchDetail(subjectId: string): Promise<ContentDetail> {
     throw new Error('No subject data in response');
   }
 
-  const seasons = extractSeasons(subject, data);
+  const type = subject.subjectType === 2 ? 'series' : 'movie';
+  let seasons = extractSeasons(subject, data);
+  // ⚠️ `subject-api/get` ne porte les saisons que dans `resource.seasons`, un
+  // bloc que l'amont laisse vide sur beaucoup de fiches : la page détail
+  // annonçait « 1 saison » dans l'en-tête (compté ailleurs) mais n'affichait
+  // AUCUNE liste d'épisodes. L'endpoint `subject-api/season-info` répond
+  // précisément à cette question, et `fetchSeasons()` qui l'interroge était
+  // écrite depuis le début — simplement jamais appelée. On ne paie l'appel
+  // supplémentaire que sur une série dont les saisons manquent.
+  if (type === 'series' && seasons.length === 0) {
+    seasons = await fetchSeasons(String(subject.subjectId || subjectId));
+  }
   const dubs = extractDubs(data);
   const cast = extractCast(subject);
 
   return {
     subjectId: String(subject.subjectId || subjectId),
+    // Slug requis par /stream : il n'existe qu'au bout de `detailUrl`.
+    detailPath: slugDeSujet(subject, data),
     title: subject.title || 'Unknown',
     description: subject.description || subject.introduction || '',
     posterUrl: subject.cover?.url || '',
     backdropUrl: subject.stills?.url || subject.cover?.url,
-    type: subject.subjectType === 2 ? 'series' : 'movie',
+    type,
     year: subject.releaseDate ? subject.releaseDate.substring(0, 4) : '',
     duration: subject.duration || undefined,
     genres: subject.genre ? subject.genre.split(',').map((g: string) => g.trim()) : [],
