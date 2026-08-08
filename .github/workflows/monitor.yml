@@ -1,0 +1,116 @@
+# Surveillance continue du contrat de l'API.
+#
+# Objectif : détecter une panne AVANT les utilisateurs. Toutes celles vécues sur
+# ce projet étaient silencieuses — l'amont répondait 200 avec des données
+# fausses — donc un simple contrôle de disponibilité ne les aurait jamais vues.
+# Le script vérifie le SENS des réponses (voir scripts/healthcheck.ts).
+name: Surveillance
+
+on:
+  schedule:
+    # Toutes les 30 minutes. MovieBox peut changer du jour au lendemain : api3
+    # est passé en 404 sur toutes ses routes sans prévenir.
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {}
+  # Après chaque mise en production : c'est le moment le plus risqué.
+  push:
+    branches: [master]
+
+concurrency:
+  group: surveillance
+  cancel-in-progress: false
+
+jobs:
+  contrat:
+    runs-on: ubuntu-latest
+    permissions:
+      # Nécessaire pour ouvrir/fermer le ticket d'alerte.
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+
+      - name: Contrôle du contrat
+        id: controle
+        run: |
+          set +e
+          npx ts-node scripts/healthcheck.ts > rapport.txt 2>&1
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          cat rapport.txt
+          {
+            echo 'rapport<<FIN'
+            cat rapport.txt
+            echo 'FIN'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Résumé de l'exécution
+        if: always()
+        run: |
+          {
+            echo '## Surveillance du contrat'
+            echo '```'
+            cat rapport.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Un ticket UNIQUE, réutilisé : ouvrir un ticket par exécution ratée
+      # noierait l'information sous le bruit et ferait perdre l'habitude de les
+      # lire. On met à jour celui qui existe, on le referme quand tout revient.
+      - name: Alerter
+        if: steps.controle.outputs.code != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const rapport = `${{ steps.controle.outputs.rapport }}`;
+            const titre = 'Surveillance : le contrat de l\'API est rompu';
+            const corps = [
+              'La surveillance automatique a détecté au moins un échec critique.',
+              '',
+              '```',
+              rapport.slice(0, 55000),
+              '```',
+              '',
+              `Exécution : ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            ].join('\n');
+
+            const ouverts = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'surveillance',
+            });
+
+            if (ouverts.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: ouverts.data[0].number, body: corps,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: titre, body: corps, labels: ['surveillance'],
+              });
+            }
+
+      - name: Refermer l'alerte si tout est revenu
+        if: steps.controle.outputs.code == '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ouverts = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'surveillance',
+            });
+            for (const t of ouverts.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: t.number,
+                body: 'Tous les contrôles repassent au vert — refermé automatiquement.',
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: t.number, state: 'closed',
+              });
+            }
