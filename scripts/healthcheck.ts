@@ -24,6 +24,8 @@
  */
 
 const BASE = process.env.API_BASE || 'https://dexmovies-api.vercel.app';
+const PWA = process.env.PWA_BASE || 'https://pwa.iafr-ahd.com';
+const PI = process.env.PI_BASE || 'https://resolver.iafr-ahd.com';
 
 /** Fiches de référence, choisies pour couvrir les cas qui ont cassé. */
 const SERIE_VF = '1087731141295178920'; // Opérations spéciales : Lioness [VF]
@@ -50,6 +52,41 @@ async function get(chemin: string): Promise<any> {
     return await r.json();
   } catch (e: any) {
     return { __erreur: e?.message || String(e) };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * Ajoute un paramètre unique : on veut l'état RÉEL du serveur, pas une copie
+ * gardée par un intermédiaire. Sans ça, la surveillance peut confirmer un
+ * déploiement qui n'a jamais eu lieu.
+ */
+function sansCache(url: string): string {
+  return `${url}${url.includes('?') ? '&' : '?'}_=${Date.now()}`;
+}
+
+/** Récupère une ressource en TEXTE — le PWA sert du HTML, pas du JSON. */
+async function getTexte(url: string): Promise<{ status: number; corps: string }> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 30_000);
+  try {
+    const r = await fetch(sansCache(url), { signal: ctrl.signal });
+    return { status: r.status, corps: r.ok ? await r.text() : '' };
+  } catch {
+    return { status: 0, corps: '' };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function statut(url: string): Promise<number> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 30_000);
+  try {
+    return (await fetch(sansCache(url), { signal: ctrl.signal })).status;
+  } catch {
+    return 0;
   } finally {
     clearTimeout(t);
   }
@@ -171,8 +208,108 @@ async function controlerRelaisEtVf(): Promise<void> {
     `le catalogue VF n'est pas vide (reçu ${items.length})`);
 }
 
+/**
+ * PWA — elle est servie par le Raspberry Pi, pas par Vercel : ni le déploiement
+ * du backend ni la CI ne la surveillent autrement.
+ */
+async function controlerPwa(): Promise<void> {
+  const page = await getTexte(`${PWA}/`);
+  verifier('critique', 'PWA', page.status === 200, `la page répond (HTTP ${page.status})`);
+  if (page.status !== 200) return;
+
+  // ⚠️ LE contrôle qui compte. Le 08/08, un `scp` a déposé le build À CÔTÉ du
+  // dossier servi : le site a continué d'afficher la version précédente, sans
+  // la moindre erreur — ni au scp, ni au redémarrage, ni dans les journaux.
+  // Un simple « la page répond » est donc aveugle. On vérifie que les fichiers
+  // référencés par le HTML servi EXISTENT réellement.
+  const refs = [...page.corps.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map((m) => m[1]);
+  verifier('critique', 'PWA', refs.length >= 2,
+    `le HTML référence ses fichiers compilés (${refs.length} trouvés)`);
+  for (const ref of refs) {
+    const code = await statut(`${PWA}${ref}`);
+    verifier('critique', 'PWA', code === 200, `${ref} est bien servi (HTTP ${code})`);
+  }
+
+  // Sans manifeste en `standalone`, « Installer » donne un raccourci de
+  // navigateur : plus de barre d'onglets ni de plein écran, l'illusion tombe.
+  const man = await getTexte(`${PWA}/manifest.webmanifest`);
+  verifier('critique', 'PWA', man.status === 200, 'le manifeste est servi');
+  if (man.status === 200) {
+    let m: any = {};
+    try { m = JSON.parse(man.corps); } catch { /* manifeste illisible */ }
+    verifier('critique', 'PWA', m.display === 'standalone',
+      `installable en plein écran (display = ${m.display})`);
+    verifier('avertissement', 'PWA', (m.icons || []).length >= 2, "les icônes d'installation sont déclarées");
+  }
+
+  // Les polices sont l'identité visuelle : sans elles le rendu retombe en
+  // police système et ne ressemble plus à l'app.
+  const police = await statut(`${PWA}/fonts/jakarta_bold.ttf`);
+  verifier('avertissement', 'PWA', police === 200, `les polices de l'app sont servies (HTTP ${police})`);
+
+  const sw = await statut(`${PWA}/sw.js`);
+  verifier('avertissement', 'PWA', sw === 200, `le service worker est servi (HTTP ${sw})`);
+}
+
+/** Raspberry Pi — machine résidentielle, point de défaillance unique connu. */
+async function controlerPi(): Promise<void> {
+  const code = await statut(`${PI}/health`);
+  verifier('avertissement', 'Pi', code === 200, `le resolver répond (HTTP ${code})`);
+}
+
+/**
+ * Contrat consommé par l'app ANDROID.
+ *
+ * C'est le contrôle le plus important pour les APK DÉJÀ INSTALLÉES : elles ne
+ * se mettent pas à jour toutes seules. Gson associe le JSON aux champs par
+ * NOM ; un champ non-nullable de `Models.kt` absent de la réponse devient
+ * `null`, et Kotlin lève au premier accès — écran blanc ou fermeture, chez des
+ * utilisateurs dont on ne peut plus rien corriger à distance.
+ *
+ * Renommer un champ côté serveur casse donc toutes les versions en circulation.
+ * Aucun test backend ne le voit : la réponse reste un JSON parfaitement valide.
+ */
+async function controlerContratAndroid(): Promise<void> {
+  const manque = (o: any, champs: string[]) =>
+    champs.filter((c) => o?.[c] === undefined || o?.[c] === null);
+
+  const home = await get('/api/dex/home?lang=fr');
+  const item = (home?.data?.sections || []).flatMap((s: any) => s.items || [])[0];
+  verifier('critique', 'contrat Android', Boolean(item), "l'accueil renvoie au moins un titre");
+  if (item) {
+    // ContentItem : champs déclarés NON-NULL côté Kotlin.
+    const absents = manque(item, ['subjectId', 'title', 'posterUrl', 'type']);
+    verifier('critique', 'contrat Android', absents.length === 0,
+      `ContentItem complet (manquants : ${absents.join(', ') || 'aucun'})`);
+  }
+
+  const detail = await get(`/api/dex/detail/${SERIE_DOUBLEE}?lang=fr`);
+  const d = detail?.data;
+  if (d) {
+    const absents = manque(d, ['subjectId', 'title', 'posterUrl', 'type', 'dubs', 'freeEpisodes']);
+    verifier('critique', 'contrat Android', absents.length === 0,
+      `ContentDetail complet (manquants : ${absents.join(', ') || 'aucun'})`);
+  }
+
+  const flux = await get(`/api/dex/stream/${SERIE_VF}?season=1&episode=1&lang=fr`);
+  const f = flux?.data;
+  if (f) {
+    const absents = manque(f, ['sources', 'dubs', 'subtitles', 'hasResource', 'freeEpisodes']);
+    verifier('critique', 'contrat Android', absents.length === 0,
+      `StreamData complet (manquants : ${absents.join(', ') || 'aucun'})`);
+    const s0 = (f.sources || [])[0];
+    if (s0) {
+      const absentsSrc = manque(s0, ['url', 'format', 'quality']);
+      verifier('critique', 'contrat Android', absentsSrc.length === 0,
+        `StreamSource complet (manquants : ${absentsSrc.join(', ') || 'aucun'})`);
+    }
+  }
+}
+
 async function main(): Promise<void> {
-  console.log(`Surveillance du contrat — ${BASE}`);
+  console.log(`Surveillance — API ${BASE}
+              PWA ${PWA}
+              Pi  ${PI}`);
   console.log(`${new Date().toISOString()}\n`);
 
   await controlerSante();
@@ -182,6 +319,9 @@ async function main(): Promise<void> {
   await controlerLecture();
   await controlerTelechargement();
   await controlerRelaisEtVf();
+  await controlerContratAndroid();
+  await controlerPwa();
+  await controlerPi();
 
   for (const l of ok) console.log(`  OK   ${l}`);
 
