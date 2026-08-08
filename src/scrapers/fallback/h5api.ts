@@ -5,6 +5,7 @@ import { persistentGet, persistentSet } from '../../middleware/persistentCache';
 import { logger } from '../../middleware/logger';
 import { currentProfile, geoSpoofHeaders } from '../../config/geo';
 import { classifyAudioTracks, orderByAudioTrack } from '../../utils/streamSources';
+import { detectFrenchDub } from '../../utils/frenchDub';
 
 const UA_CHROME =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36';
@@ -72,27 +73,10 @@ const BROKEN_SUBJECTS: Record<string, string> = {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function getCornerLanguage(corner: string, title?: string, detailPath?: string, subtitleLangs?: string): { isFrench: boolean; language?: string } {
-  // PRIMAIRE : champ corner upstream (fiable à 100%)
-  if (corner) {
-    const c = String(corner).trim();
-    if (/vostfr/i.test(c)) return { isFrench: true, language: 'VOSTFR' };
-    if (/fran[cç]ais|\bvf\b/i.test(c)) return { isFrench: true, language: 'VF' };
-    return { isFrench: false };
-  }
-
-  // FALLBACK : l'upstream n'a pas fourni de corner → on vérifie le titre et le slug
-  // pour des marqueurs explicites de langue. Ex: "Naruto [Version française]",
-  // "Godzilla [VF]", detailPath contenant "-version-francaise-".
-  // Ne pas utiliser de heuristiques larges (le titre "Kiss the French Girl"
-  // n'est pas VF), cibler uniquement les motifs entre crochets/ parenthèses.
-  const haystack = [title || '', detailPath || '', subtitleLangs || ''].join(' ');
-  if (/vostfr/i.test(haystack)) return { isFrench: true, language: 'VOSTFR' };
-  if (/\[version\s*fran[cç]ais\]|\(version\s*fran[cç]ais\)|-version-francaise-|\bvf\b|\[vf\]|\(vf\)|\[french\]|\(french\)|-vf-|-vf$/i.test(haystack)) {
-    return { isFrench: true, language: 'VF' };
-  }
-  return { isFrench: false };
-}
+// Implémentation déplacée dans utils/frenchDub.ts : le scraper mobile
+// (moviebox-hmac) en a besoin lui aussi pour ses résultats de recherche.
+// L'alias local évite de toucher aux 4 appels existants de ce fichier.
+const getCornerLanguage = detectFrenchDub;
 
 /**
  * Décode les entités HTML des titres upstream. Les rails CUSTOM (contenus

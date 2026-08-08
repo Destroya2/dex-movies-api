@@ -85,11 +85,18 @@ export interface SubtitleTrack {
 
 export interface SearchResult {
   subjectId: string;
+  /** Slug requis par /stream — jamais optionnel côté app. */
+  detailPath?: string;
   title: string;
   posterUrl: string;
   type: 'movie' | 'series';
   year?: string;
   rating?: string;
+  /** Badge de langue affiché sur l'affiche ("VF" / "VOSTFR"). */
+  language?: string;
+  isFrench?: boolean;
+  /** Libellé `corner` upstream, tel quel ("En français"…). */
+  badge?: string;
 }
 
 export interface CategoryContent {

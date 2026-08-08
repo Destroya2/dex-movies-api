@@ -1,5 +1,6 @@
 import { request } from './http';
 import { logger } from '../middleware/logger';
+import { pickTrailerKey } from './tmdb';
 
 /**
  * Couche CATALOGUE TMDB : fournit une navigation quasi-infinie (tendances,
@@ -202,7 +203,12 @@ export async function tmdbSearch(query: string, page = 1): Promise<{ items: any[
 /** Détail complet TMDB (pour la fiche + le pont vers le flux). */
 export async function tmdbDetail(type: TmdbMediaType, id: number): Promise<any | null> {
   try {
-    const detail = await tmdbGet(`/${type}/${id}`, { append_to_response: 'credits,external_ids,videos' });
+    // include_video_language : sans lui, `language=fr-FR` ne rend que les vidéos
+    // FRANÇAISES — vide sur la majorité du catalogue, donc pas de bande-annonce.
+    const detail = await tmdbGet(`/${type}/${id}`, {
+      append_to_response: 'credits,external_ids,videos',
+      include_video_language: 'fr,en,null',
+    });
     const genreMap = await getGenreMap(type);
     const base = mapTmdbItem(detail, type, genreMap);
     if (!base) return null;
@@ -211,11 +217,8 @@ export async function tmdbDetail(type: TmdbMediaType, id: number): Promise<any |
     const director = (detail.credits?.crew || []).find((c: any) => c.job === 'Director')?.name;
     const studio = detail.production_companies?.[0]?.name;
     // videos.results est déjà dans la réponse (append_to_response) : on choisit la
-    // meilleure bande-annonce YouTube (officielle en priorité).
-    const videos = (detail.videos?.results || []) as any[];
-    const trailer = videos.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
-      || videos.find((v) => v.site === 'YouTube' && v.type === 'Trailer')
-      || videos.find((v) => v.site === 'YouTube');
+    // meilleure bande-annonce YouTube (VF officielle en priorité, anglaise sinon).
+    const trailerKey = pickTrailerKey(detail.videos?.results || []);
     return {
       ...base,
       // Titre original (souvent anglais) : MovieBox indexe beaucoup de titres ainsi
@@ -227,7 +230,7 @@ export async function tmdbDetail(type: TmdbMediaType, id: number): Promise<any |
       cast: cast.length ? cast : undefined,
       director,
       studio,
-      trailerKey: trailer?.key,
+      trailerKey,
       imdbId: detail.external_ids?.imdb_id,
       seasonsCount: detail.number_of_seasons,
     };

@@ -20,11 +20,42 @@ export interface TmdbResult {
   trailerKey?: string;
 }
 
+/**
+ * Choisit la meilleure bande-annonce YouTube d'une réponse TMDB `videos`.
+ *
+ * ⚠️ TMDB filtre `videos.results` sur le `language` de la requête. Toutes nos
+ * requêtes partent en `fr-FR` : pour un blockbuster une bande-annonce VF existe
+ * et tout allait bien, mais pour tout le reste du catalogue la liste revenait
+ * VIDE — donc `trailerKey` absent, donc la fiche affichait un poster figé au
+ * lieu du lecteur. Les appelants demandent désormais
+ * `include_video_language=fr,en,null` ; on préfère ici le français quand il
+ * existe, l'anglais sinon.
+ */
+export function pickTrailerKey(videos: any[]): string | undefined {
+  const yt = (videos || []).filter((v: any) => v?.site === 'YouTube' && v?.key);
+  const trailers = yt.filter((v: any) => v.type === 'Trailer');
+  const fr = (list: any[]) => list.filter((v: any) => v.iso_639_1 === 'fr');
+  const officiel = (list: any[]) => list.filter((v: any) => v.official);
+
+  const choix =
+    officiel(fr(trailers))[0] ||
+    fr(trailers)[0] ||
+    officiel(trailers)[0] ||
+    trailers[0] ||
+    fr(yt)[0] ||
+    yt[0];
+  return choix?.key;
+}
+
 function searchQuery(title: string): string {
   return title
     .replace(/\[.*?\]/g, '')
     .replace(/\(.*?\)/g, '')
-    .replace(/[VF]|VOSTFR|Version\s*[Ff]rançaise/g, '')
+    // ⚠️ `[VF]` était une CLASSE de caractères : elle supprimait chaque « V » et
+    // chaque « F » du titre. « Venom » partait chez TMDB en « enom », « Frozen »
+    // en « rozen » → aucun match, donc ni synopsis, ni casting, ni bande-annonce
+    // sur ces fiches. Il fallait un mot entier.
+    .replace(/\bVF\b|\bVOSTFR\b|Version\s*[Ff]ran[cç]aise/gi, '')
     // Plages de saisons que MovieBox ajoute au titre ("S1-S3", "S01-S03",
     // "Saison 1", "Saison 1-3") : sans elles, le matching TMDB échoue
     // ("Spider-Man S1-S3" → 0 résultat TMDB, vérifié).
@@ -55,7 +86,7 @@ export async function enrichWithTmdb(
     const first = results[0];
     const id = first.id;
 
-    const detailUrl = `${TMDB_BASE}/${type === 'series' ? 'tv' : 'movie'}/${id}?api_key=${TMDB_API_KEY}&language=fr-FR&append_to_response=credits,external_ids,videos`;
+    const detailUrl = `${TMDB_BASE}/${type === 'series' ? 'tv' : 'movie'}/${id}?api_key=${TMDB_API_KEY}&language=fr-FR&append_to_response=credits,external_ids,videos&include_video_language=fr,en,null`;
     const detailResp = await request(detailUrl);
     if (detailResp.status !== 200) return null;
 
@@ -63,11 +94,8 @@ export async function enrichWithTmdb(
 
     const cast = (detail.credits?.cast || []).slice(0, 10).map((c: any) => c.name).filter(Boolean);
 
-    // Bande-annonce YouTube : officielle en priorité, sinon la première vidéo.
-    const videos = (detail.videos?.results || []) as any[];
-    const trailer = videos.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer' && v.official)
-      || videos.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer')
-      || videos.find((v: any) => v.site === 'YouTube');
+    // Bande-annonce YouTube : VF officielle en priorité, sinon anglaise.
+    const trailerKey = pickTrailerKey(detail.videos?.results || []);
 
     return {
       title: detail.title || detail.name || first.title,
@@ -80,7 +108,7 @@ export async function enrichWithTmdb(
       cast: cast.length > 0 ? cast : undefined,
       runtime: detail.runtime || detail.episode_run_time?.[0],
       imdbId: detail.external_ids?.imdb_id,
-      trailerKey: trailer?.key,
+      trailerKey,
     };
   } catch (err) {
     logger.warn(`TMDB enrichment failed for "${title}": ${(err as Error).message}`);
