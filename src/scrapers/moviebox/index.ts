@@ -67,6 +67,48 @@ export class MovieBoxMobileScraper implements Scraper {
     return fetchStream(subjectId, season, episode);
   }
 
+  /**
+   * Téléchargements.
+   *
+   * Le scraper n'implémentait PAS cette méthode : l'orchestrateur la saute
+   * (`if (!scraper.downloads) continue`) et retombait donc toujours sur le h5,
+   * en silence. Conséquence mesurée le 08/08/2026 sur « Opérations spéciales :
+   * Lioness S1-S3 » : 3 sources lisibles, **0 fichier téléchargeable**, alors
+   * que l'API mobile expose bien des MP4 avec leur taille.
+   *
+   * On réutilise `play-info` — la même réponse que la lecture — en ne gardant
+   * que les fichiers progressifs : un manifeste DASH/HLS n'est pas
+   * téléchargeable d'un bloc par le gestionnaire de l'app.
+   */
+  async downloads(
+    subjectId: string,
+    season?: number,
+    episode?: number,
+    _detailPath?: string,
+  ): Promise<{ files: any[]; captions: any[]; hasResource: boolean }> {
+    const r = await fetchStream(subjectId, season, episode);
+
+    const files = r.sources
+      .filter((s) => s.format === 'MP4' && s.url)
+      .map((s) => ({
+        url: s.url,
+        format: 'MP4',
+        quality: s.quality,
+        size: s.size,
+        duration: s.duration,
+        // La langue suit le fichier : sans elle, l'utilisateur téléchargerait
+        // un doublage sans le savoir, et s'en apercevrait hors connexion.
+        audioTrack: s.audioTrack,
+        audioLabel: s.audioLabel,
+      }));
+
+    const captions = (r.subtitles || [])
+      .map((c: any) => ({ url: c.url || '', language: c.language || 'Unknown' }))
+      .filter((c: any) => c.url);
+
+    return { files, captions, hasResource: files.length > 0 };
+  }
+
   async category(tabId: string, page: number = 1): Promise<{ items: any[]; page: number; hasMore: boolean }> {
     const content = await fetchCategoryContent(tabId, page);
     return { items: content.items, page, hasMore: content.hasMore };
